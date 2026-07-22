@@ -1,0 +1,97 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          zero-touchd
+# Required-Start:    $network $local_fs iot-ds
+# Required-Stop:     $network $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: zero-touch device control + gNMI provisioning over SMS
+# Description:       Turns authenticated MT-SMS (IOT GNMI / classic commands)
+#                    into gNMI Get/Set against the device-local gNMI server and
+#                    replies over SMS. Inert until zerotouch.enabled=true.
+### END INIT INFO
+#
+# SysV / BusyBox init script for boards without systemd. The systemd unit is
+# packaging/systemd/zero-touchd.service; this is the equivalent for SysV.
+# It runs the daemon in group `iot` (ds socket + /run/iot triggers), exactly as
+# the unit's Group=iot does.
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin
+NAME=zero-touchd
+DAEMON=/usr/local/bin/zero-touchd
+PIDFILE=/run/$NAME.pid
+RUNGROUP=iot
+ENVFILE=/etc/iot/zerotouchd.env
+
+# ZEROTOUCH_ARGS may be overridden in the env file (matches the systemd unit).
+ZEROTOUCH_ARGS=""
+[ -r "$ENVFILE" ] && . "$ENVFILE"
+
+test -x "$DAEMON" || { echo "$NAME: $DAEMON not installed" >&2; exit 5; }
+
+# Prefer start-stop-daemon (Debian/BusyBox); fall back to a plain fork.
+have_ssd() { command -v start-stop-daemon >/dev/null 2>&1; }
+
+is_running() {
+    [ -f "$PIDFILE" ] || return 1
+    kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+}
+
+start() {
+    if is_running; then
+        echo "$NAME already running (pid $(cat "$PIDFILE"))"
+        return 0
+    fi
+    echo "Starting $NAME"
+    if have_ssd; then
+        start-stop-daemon --start --quiet --background \
+            --make-pidfile --pidfile "$PIDFILE" \
+            --group "$RUNGROUP" \
+            --exec "$DAEMON" -- $ZEROTOUCH_ARGS
+    else
+        # BusyBox/minimal: drop to the iot group if we can, then background it.
+        if command -v sg >/dev/null 2>&1; then
+            sg "$RUNGROUP" -c "$DAEMON $ZEROTOUCH_ARGS" &
+        else
+            "$DAEMON" $ZEROTOUCH_ARGS &
+        fi
+        echo $! > "$PIDFILE"
+    fi
+}
+
+stop() {
+    if ! is_running; then
+        echo "$NAME not running"
+        rm -f "$PIDFILE"
+        return 0
+    fi
+    echo "Stopping $NAME"
+    if have_ssd; then
+        start-stop-daemon --stop --quiet --pidfile "$PIDFILE" --retry TERM/10/KILL/5
+    else
+        kill "$(cat "$PIDFILE")" 2>/dev/null
+    fi
+    rm -f "$PIDFILE"
+}
+
+status() {
+    if is_running; then
+        echo "$NAME running (pid $(cat "$PIDFILE"))"
+        exit 0
+    else
+        echo "$NAME stopped"
+        exit 3
+    fi
+}
+
+case "$1" in
+    start)              start ;;
+    stop)               stop ;;
+    restart|force-reload) stop; sleep 1; start ;;
+    status)             status ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|force-reload|status}" >&2
+        exit 2
+        ;;
+esac
+exit 0

@@ -21,6 +21,20 @@ TEST(GnmiReply, GetPerPathErrorHidesValue) {
     EXPECT_EQ(out.find("hunter2"), std::string::npos);
 }
 
+TEST(GnmiReply, GetMixedGoodAndDeniedInOneReply) {
+    // RPC ok=true; one leaf returned, one path denied. Both appear; the denied
+    // one is masked. (Regression: ok must stay true so the OK branch renders.)
+    GnmiResult r;
+    r.ok = true;
+    r.paths = {{"/system/config/hostname", "router-7", ""},
+               {"/aaa/user[name=admin]/password", "s3cr3t", "sensitive path denied"}};
+    const auto out = format_get(r);
+    EXPECT_EQ(out,
+              "OK GNMI GET /system/config/hostname=router-7; "
+              "/aaa/user[name=admin]/password=<sensitive path denied>");
+    EXPECT_EQ(out.find("s3cr3t"), std::string::npos);
+}
+
 TEST(GnmiReply, GetTransportError) {
     GnmiResult r;
     r.ok = false;

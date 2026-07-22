@@ -39,7 +39,27 @@ cmake --install build --prefix /usr/local
 | ds schema | `/etc/iot/ds-schemas/zerotouch.lua` |
 | env file | `/etc/iot/zerotouchd.env` |
 | systemd unit | `/lib/systemd/system/zero-touchd.service` |
+| SysV init script (with `-DZT_INSTALL_SYSV=ON`) | `/etc/init.d/zero-touchd` |
 | this doc | `/usr/local/share/doc/zero-touch/DEPLOY.md` |
+
+### Boards without systemd (SysV / BusyBox)
+
+Configure with `-DZT_INSTALL_SYSV=ON` to install `/etc/init.d/zero-touchd`
+(LSB-headered, uses `start-stop-daemon` when present, else a plain fork; runs the
+daemon in group `iot` just like the unit). Then:
+
+```sh
+update-rc.d zero-touchd defaults      # or: chkconfig --add zero-touchd
+/etc/init.d/zero-touchd start
+/etc/init.d/zero-touchd status
+```
+
+## Test the command grammar offline first
+
+Before touching a device, drive the exact same engine from a keyboard with
+`zerotouch-sim` (host build, no modem/ds/gRPC) — see the README. It's the
+fastest way to learn the `IOT GNMI …` grammar and confirm the sensitive-path
+denial and allowlist/enabled gating behave as you expect.
 
 ## Enable
 

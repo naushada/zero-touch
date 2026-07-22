@@ -22,11 +22,33 @@ deploying `zero-touchd` on a device.
 inc/zerotouch/   ISmsTransport, GnmiSink, gnmi_command   (the two interface seams)
 src/             gnmi command layer + transport/sink impls
 daemon/          zero-touchd
+sim/             zerotouch-sim — offline SMS simulator (no modem/ds/gRPC)
 test/            host tests (mocks: no modem, no gRPC)
 schemas/         zerotouch.lua — ds key schema + defaults
-packaging/       systemd unit + env file
+packaging/       systemd unit + SysV init script + env file
 third_party/     iot, grace-server (submodules)
 ```
+
+## Try it offline — `zerotouch-sim`
+
+`zerotouch-sim` runs the **real** command path (smsctl parser/session/executor +
+the zerotouch bridge/gnmi layer) against in-memory ds and gNMI stores, so you can
+drive the whole `IOT …` SMS conversation from a keyboard — no modem, no
+ds-server, no gRPC. It builds by default (needs the `smsctl` engine, so
+`git submodule update --init --recursive` first).
+
+```
+$ ./build/zerotouch-sim
+> IOT LOGIN admin admin
+  ← SMS to +15551230000: OK LOGIN: admin, 10 min
+> IOT GNMI GET /system/config/hostname,/system/aaa/user[name=admin]/config/password
+  ← SMS to +15551230000: OK GNMI GET /system/config/hostname=demo-router; /system/aaa/user[name=admin]/config/password=<sensitive path denied>
+> IOT GNMI SET /system/config/hostname router-7
+  ← SMS to +15551230000: OK GNMI SET 1 path(s) updated
+```
+
+`/help` lists the REPL commands (`/from`, `/enable`, `/disable`, `/allow`,
+`/tree`, `/users`).
 
 ## Build (host tests)
 
