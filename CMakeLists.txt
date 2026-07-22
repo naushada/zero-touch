@@ -39,6 +39,8 @@ add_library(zerotouch_core STATIC
     src/gnmi_reply.cpp
     src/path_policy.cpp
     src/sms_util.cpp
+    src/config.cpp
+    src/users.cpp
     src/bridge.cpp)
 target_include_directories(zerotouch_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/inc)
@@ -144,6 +146,22 @@ if(ZT_BUILD_SIM)
     endif()
 endif()
 
+# ── zerotouch_standalone: ds-free backends for the standalone appliance ──────
+# DirectActionSink is a smsctl::DsSink (it reuses smsctl::Executor), so this lib
+# needs smsctl::core + iot's json single_include. The pure command layer
+# (config/users/modem interface) already lives in zerotouch_core. Skips
+# gracefully if the submodule isn't initialised.
+set(ZT_STD_JSON
+    ${IOT_SMSCTL_DIR}/../../apps/3rdparty/json/single_include/nlohmann/json.hpp)
+if(TARGET smsctl_core AND EXISTS ${ZT_STD_JSON})
+    add_library(zerotouch_standalone STATIC src/direct_action_sink.cpp)
+    target_include_directories(zerotouch_standalone PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc ${IOT_SMSCTL_DIR}/inc)
+    target_link_libraries(zerotouch_standalone PUBLIC zerotouch_core smsctl_core)
+    target_compile_options(zerotouch_standalone PRIVATE -Wall -Wextra)
+    add_library(zerotouch::standalone ALIAS zerotouch_standalone)
+endif()
+
 # ── tests ───────────────────────────────────────────────────────────────────
 if(ZT_BUILD_TESTS)
     # Prefer a system GTest; otherwise fetch a pinned copy so the suite builds
@@ -166,6 +184,9 @@ if(ZT_BUILD_TESTS)
         test/gnmi_reply_test.cpp
         test/path_policy_test.cpp
         test/sms_util_test.cpp
+        test/config_test.cpp
+        test/users_test.cpp
+        test/modem_test.cpp
         test/bridge_test.cpp)
     target_include_directories(zerotouch-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
@@ -174,6 +195,19 @@ if(ZT_BUILD_TESTS)
         zerotouch_core GTest::gtest GTest::gtest_main)
     target_compile_options(zerotouch-tests PRIVATE -Wall -Wextra)
     add_test(NAME zerotouch-tests COMMAND zerotouch-tests)
+
+    # DirectActionSink tests need smsctl::core (built only when the submodule is
+    # present) — mirrors the standalone lib's guard.
+    if(TARGET zerotouch_standalone)
+        add_executable(zerotouch-standalone-tests test/direct_action_sink_test.cpp)
+        target_include_directories(zerotouch-standalone-tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc ${IOT_SMSCTL_DIR}/inc
+            ${CMAKE_CURRENT_SOURCE_DIR}/test)
+        target_link_libraries(zerotouch-standalone-tests PRIVATE
+            zerotouch_standalone GTest::gtest GTest::gtest_main)
+        target_compile_options(zerotouch-standalone-tests PRIVATE -Wall -Wextra)
+        add_test(NAME zerotouch-standalone-tests COMMAND zerotouch-standalone-tests)
+    endif()
 endif()
 
 # ── zero-touchd daemon ──────────────────────────────────────────────────────
