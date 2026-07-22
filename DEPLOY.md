@@ -177,6 +177,112 @@ systemctl restart zero-touchd.service ; systemctl status zero-touchd.service
 `zerotouch.state` flips to `listening`. Text `IOT GNMI GET /system/config/hostname`
 from an allowlisted phone to confirm the round trip.
 
+## SysV read-only device runbook
+
+Practical, artifact-oriented steps for shipping to an **ARMv8-A device with a
+read-only rootfs and a SysV init system**, starting from the tarball
+`./build.sh`/`docker-build.sh` produce.
+
+**Key constraint:** you **cannot register a SysV service on a running read-only
+device** — `/etc/init.d`, `/etc/rc*.d` and `/usr/bin` are read-only, and
+`update-rc.d` / `chkconfig` write symlinks under `/etc/rc*.d`. So persistent
+SysV auto-start must be **baked into the image**; a running device can only host
+an ephemeral run from `/run`.
+
+`zero-touchd-aarch64-sysv.tar.gz` is a tree rooted at `/`:
+
+```
+usr/bin/zero-touchd
+etc/init.d/zero-touchd
+etc/iot/ds-schemas/zerotouch.lua
+etc/iot/zerotouchd.env
+lib/systemd/system/zero-touchd.service   (ignored on SysV)
+```
+
+### Option 1 — Persistent + SysV auto-start (bake into the image) — recommended
+
+The only way the init script + its `rc.d` links survive on a read-only rootfs
+(the links must live in the read-only `/etc/rc*.d`). Do this on the **build
+host**, against the image rootfs staging — not on the device.
+
+```sh
+# 1a. unpack the artifact into the image rootfs staging
+sudo tar xzf zero-touchd-aarch64-sysv.tar.gz -C /path/to/image-rootfs/
+
+# 1b. create the SysV runlevel links so it auto-starts at boot
+sudo chroot /path/to/image-rootfs update-rc.d zero-touchd defaults 90 10
+# (or make S90/K10 symlinks by hand under etc/rc*.d/ → ../init.d/zero-touchd)
+
+# 1c. rebuild/repack the image and flash / A-B OTA it to the device
+```
+
+> Building with Yocto? Skip 1a/1b and use `packaging/yocto/zero-touchd_git.bb`
+> (`IMAGE_INSTALL:append = " zero-touchd"`) — its `update-rc.d` class creates the
+> links for you.
+
+Then on the device (hot-applies, no restart):
+
+```sh
+ds-cli set zerotouch.enabled true
+ds-cli set zerotouch.allowed.numbers '"+919096383701"'
+ds-cli set zerotouch.gnmi.port 50051        # match the on-device gNMI server
+/etc/init.d/zero-touchd status              # → running (pid …)
+```
+
+### Option 2 — Run now from `/run` (ephemeral, no reflash)
+
+`/run` is writable tmpfs; nothing touches the rootfs; it's gone on reboot. Good
+for a smoke test.
+
+```sh
+# build host → device
+scp zero-touchd-aarch64-sysv.tar.gz root@<device>:/run/
+
+# on the device
+cd /run && tar xzf zero-touchd-aarch64-sysv.tar.gz ./usr/bin/zero-touchd
+chmod +x /run/usr/bin/zero-touchd
+/run/usr/bin/zero-touchd &                  # the real daemon, no init script
+```
+
+Enable with the same `ds-cli set zerotouch.*` commands as Option 1.
+
+> **Caveat:** ds-server loads the `zerotouch.*` schema from the read-only
+> `/etc/iot/ds-schemas/`. If it isn't already in the image, `ds-cli set
+> zerotouch.enabled true` is rejected as an unknown key and the daemon stays
+> inert on its defaults. The schema is ~2 KB — bake `zerotouch.lua` into the
+> image even when you run the binary from `/run`.
+
+### Option 3 — Writable overlay / data partition (if present)
+
+Some read-only images overlay `/etc` or expose a writable `/data` / `/overlay`.
+
+```sh
+# binary on the writable partition
+install -m755 usr/bin/zero-touchd /data/bin/zero-touchd
+
+# if /etc is a writable overlay, install + register the init script
+install -m755 etc/init.d/zero-touchd /etc/init.d/zero-touchd
+update-rc.d zero-touchd defaults            # only works if /etc is writable
+```
+
+If only `/data` is writable (not `/etc`), you cannot add `/etc/rc*.d` links —
+use whatever boot hook your platform exposes on the writable partition (an
+`rc.local` / `local.d` script) to `exec /data/bin/zero-touchd` at boot.
+
+### Verify (any option)
+
+```sh
+pgrep -a zero-touchd                        # daemon running
+ds-cli get zerotouch.state                  # → listening
+# then, from an allowlisted phone to the device SIM:
+#   IOT LOGIN <user> <pass>
+#   IOT GNMI GET /system/config/hostname
+```
+
+`zero-touchd` is a loopback gNMI **client** — `zerotouch.gnmi.port` must match
+the port the on-device gNMI server listens on (`127.0.0.1`). Classic SMS commands
+work even if that server is down.
+
 ## Test the command grammar offline first
 
 Before touching a device, drive the exact same engine from a keyboard with
