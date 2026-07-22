@@ -31,20 +31,23 @@ ARG ARTIFACT
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake git ca-certificates file pkg-config \
         libace-dev \
-        libssl-dev \
+        libssl-dev libssl3 \
         libprotobuf-dev protobuf-compiler \
         libevent-dev libnghttp2-dev \
         liblua5.4-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# In this slim/emulated image some `-dev` symlinks (`lib*.so`) are absent even
-# though the runtime `lib*.so.<n>` is present, so CMake's find_library and the
-# linker's `-l<name>` cannot resolve them. This first bit CMake's FindOpenSSL
-# (missing OPENSSL_CRYPTO_LIBRARY) and would next bite `-lACE` (and libevent /
-# nghttp2 / protobuf / lua) at link time. Recreate every missing `lib<name>.so`
-# dev symlink from the newest matching runtime object, in both the plain and
-# multiarch lib dirs. Idempotent: correctly-packaged symlinks are left as-is.
+# Show exactly which OpenSSL/ACE objects landed (so the build log is ground
+# truth if anything is off), then recreate any missing `lib<name>.so` dev
+# symlink from the runtime object — this fixes the linker's `-l<name>` for ACE
+# and friends. (OpenSSL itself is pinned explicitly at the cmake step below, so
+# it no longer depends on find_library succeeding.)
 RUN set -eux; \
+    echo "=== openssl packages ==="; (dpkg -l | grep -Ei 'libssl|openssl' || true); \
+    echo "=== openssl/ace objects on disk ==="; \
+    find /usr/lib /lib -maxdepth 2 \
+        \( -name 'libcrypto.so*' -o -name 'libssl.so*' -o -name 'libACE*.so*' \) \
+        2>/dev/null | sort || true; \
     for d in /usr/lib "/usr/lib/$(gcc -dumpmachine)"; do \
         [ -d "$d" ] || continue; \
         for real in $(find "$d" -maxdepth 1 -name '*.so.*' 2>/dev/null | sort); do \
@@ -52,10 +55,7 @@ RUN set -eux; \
             [ -e "${d}/${stem}.so" ] || ln -s "$real" "${d}/${stem}.so"; \
         done; \
     done; \
-    ldconfig; \
-    echo "== key dev symlinks ==" && \
-    ls -l /usr/lib/*/libACE.so /usr/lib/libACE.so \
-          /usr/lib/*/libcrypto.so /usr/lib/libcrypto.so 2>/dev/null || true
+    ldconfig
 
 WORKDIR /src
 # The build context must already contain the submodule working trees
@@ -65,7 +65,15 @@ COPY . .
 # Configure + build the daemon (+ its reused smsctl/datastore/gnmi_client) and
 # stage the install tree into /out. ACE_ROOT=/usr → Debian's libace-dev layout;
 # install prefix /usr (device layout, not /usr/local).
-RUN cmake -S . -B build \
+# Pin OpenSSL explicitly (headers + the actual crypto/ssl objects) so configure
+# does not depend on FindOpenSSL's find_library search, which mis-fires in this
+# image (finds the headers → "found version 3.0.x" but not OPENSSL_CRYPTO_LIBRARY).
+# The paths are discovered on disk; if either is empty the echo makes it obvious.
+RUN set -eux; \
+    CRYPTO="$(find /usr/lib /lib -name 'libcrypto.so*' 2>/dev/null | sort | tail -1)"; \
+    SSL="$(find /usr/lib /lib -name 'libssl.so*' 2>/dev/null | sort | tail -1)"; \
+    echo "OpenSSL for cmake: crypto=${CRYPTO:-MISSING} ssl=${SSL:-MISSING}"; \
+    cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DZT_BUILD_DAEMON=ON \
         -DZT_INSTALL_SYSV=ON \
@@ -74,6 +82,10 @@ RUN cmake -S . -B build \
         -DZT_SYSTEMD_DIR=/lib/systemd/system \
         -DACE_ROOT=/usr \
         -DCMAKE_INSTALL_PREFIX=/usr \
+        -DOPENSSL_ROOT_DIR=/usr \
+        -DOPENSSL_INCLUDE_DIR=/usr/include \
+        ${CRYPTO:+-DOPENSSL_CRYPTO_LIBRARY="$CRYPTO"} \
+        ${SSL:+-DOPENSSL_SSL_LIBRARY="$SSL"} \
     && cmake --build build -j"$(nproc)" \
     && DESTDIR=/out cmake --install build
 
