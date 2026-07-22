@@ -37,18 +37,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         liblua5.4-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# CMake's FindOpenSSL found the headers but not OPENSSL_CRYPTO_LIBRARY: in this
-# slim/emulated image the libcrypto.so / libssl.so *dev* symlinks that
-# find_library needs aren't present (only the runtime lib*.so.<n> is). Recreate
-# them in /usr/lib (always on the linker search path), pointing at the real
-# runtime libs, so FindOpenSSL — and plain -lssl/-lcrypto — resolve.
+# In this slim/emulated image some `-dev` symlinks (`lib*.so`) are absent even
+# though the runtime `lib*.so.<n>` is present, so CMake's find_library and the
+# linker's `-l<name>` cannot resolve them. This first bit CMake's FindOpenSSL
+# (missing OPENSSL_CRYPTO_LIBRARY) and would next bite `-lACE` (and libevent /
+# nghttp2 / protobuf / lua) at link time. Recreate every missing `lib<name>.so`
+# dev symlink from the newest matching runtime object, in both the plain and
+# multiarch lib dirs. Idempotent: correctly-packaged symlinks are left as-is.
 RUN set -eux; \
-    crypto="$(ls /usr/lib/*/libcrypto.so.* /usr/lib/libcrypto.so.* 2>/dev/null | sort | tail -1)"; \
-    ssl="$(ls /usr/lib/*/libssl.so.* /usr/lib/libssl.so.* 2>/dev/null | sort | tail -1)"; \
-    test -n "$crypto" && test -n "$ssl"; \
-    ln -sf "$crypto" /usr/lib/libcrypto.so; \
-    ln -sf "$ssl"    /usr/lib/libssl.so; \
-    ls -l /usr/lib/libcrypto.so /usr/lib/libssl.so
+    for d in /usr/lib "/usr/lib/$(gcc -dumpmachine)"; do \
+        [ -d "$d" ] || continue; \
+        for real in $(find "$d" -maxdepth 1 -name '*.so.*' 2>/dev/null | sort); do \
+            stem="$(basename "$real")"; stem="${stem%%.so.*}"; \
+            [ -e "${d}/${stem}.so" ] || ln -s "$real" "${d}/${stem}.so"; \
+        done; \
+    done; \
+    ldconfig; \
+    echo "== key dev symlinks ==" && \
+    ls -l /usr/lib/*/libACE.so /usr/lib/libACE.so \
+          /usr/lib/*/libcrypto.so /usr/lib/libcrypto.so 2>/dev/null || true
 
 WORKDIR /src
 # The build context must already contain the submodule working trees
