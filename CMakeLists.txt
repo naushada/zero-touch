@@ -6,11 +6,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(ZT_BUILD_TESTS  "Build the zero-touch gtest suite"        ON)
 option(ZT_BUILD_GNMI   "Build LocalGnmiSink (needs protobuf/libevent/nghttp2)" OFF)
+option(ZT_BUILD_DS     "Build DsSmsTransport (needs ACE + datastore_client)"   OFF)
 option(ZT_BUILD_DAEMON "Build the zero-touchd SMS→gNMI daemon"   OFF)
 
-# The daemon needs the real gNMI backend.
+# The daemon needs the real gNMI backend and the ds SMS transport.
 if(ZT_BUILD_DAEMON)
     set(ZT_BUILD_GNMI ON)
+    set(ZT_BUILD_DS   ON)
 endif()
 
 # ── reused engine: smsctl::core from the iot submodule ──────────────────────
@@ -34,6 +36,7 @@ add_library(zerotouch_core STATIC
     src/gnmi_executor.cpp
     src/gnmi_reply.cpp
     src/path_policy.cpp
+    src/sms_util.cpp
     src/bridge.cpp)
 target_include_directories(zerotouch_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/inc)
@@ -94,6 +97,29 @@ if(ZT_BUILD_GNMI)
     add_library(zerotouch::gnmi ALIAS zerotouch_gnmi)
 endif()
 
+# ── zerotouch_ds: DsSmsTransport over the cellular-client ds envelope ────────
+# Needs ACE + datastore_client (reused from the iot submodule), so opt-in.
+if(ZT_BUILD_DS)
+    if(NOT DEFINED ACE_ROOT)
+        set(ACE_ROOT /usr/local/ACE_TAO-7.0.0)
+    endif()
+    if(NOT TARGET datastore_client)
+        add_subdirectory(
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iot/modules/data-store
+            ${CMAKE_BINARY_DIR}/data-store EXCLUDE_FROM_ALL)
+    endif()
+
+    add_library(zerotouch_ds STATIC src/ds_sms_transport.cpp)
+    target_include_directories(zerotouch_ds PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_include_directories(zerotouch_ds PRIVATE ${ACE_ROOT}/include)
+    target_link_directories(zerotouch_ds PUBLIC ${ACE_ROOT}/lib)
+    target_link_libraries(zerotouch_ds PUBLIC
+        zerotouch_core datastore_client ACE pthread)
+    target_compile_options(zerotouch_ds PRIVATE -Wall -Wextra)
+    add_library(zerotouch::ds ALIAS zerotouch_ds)
+endif()
+
 # ── tests ───────────────────────────────────────────────────────────────────
 if(ZT_BUILD_TESTS)
     # Prefer a system GTest; otherwise fetch a pinned copy so the suite builds
@@ -115,6 +141,7 @@ if(ZT_BUILD_TESTS)
         test/gnmi_executor_test.cpp
         test/gnmi_reply_test.cpp
         test/path_policy_test.cpp
+        test/sms_util_test.cpp
         test/bridge_test.cpp)
     target_include_directories(zerotouch-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc

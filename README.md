@@ -42,3 +42,13 @@ nghttp2 (the device/Yocto toolchain has these):
 ```sh
 cmake -S . -B build -DZT_BUILD_GNMI=ON
 ```
+
+`DsSmsTransport` — the ds/cellular-client SMS route (impl #1 of `ISmsTransport`)
+— is likewise opt-in and needs ACE + the reused `datastore_client` (and its Lua
+/ OpenSSL deps), all provided by the device/Yocto toolchain:
+
+```sh
+cmake -S . -B build -DZT_BUILD_DS=ON
+```
+
+`-DZT_BUILD_DAEMON=ON` implies both `ZT_BUILD_GNMI` and `ZT_BUILD_DS`.
