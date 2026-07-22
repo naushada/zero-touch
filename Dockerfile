@@ -29,12 +29,26 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG ARTIFACT
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake git ca-certificates file \
+        build-essential cmake git ca-certificates file pkg-config \
         libace-dev \
+        libssl-dev \
         libprotobuf-dev protobuf-compiler \
         libevent-dev libnghttp2-dev \
-        liblua5.4-dev libssl-dev zlib1g-dev \
+        liblua5.4-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# CMake's FindOpenSSL found the headers but not OPENSSL_CRYPTO_LIBRARY: in this
+# slim/emulated image the libcrypto.so / libssl.so *dev* symlinks that
+# find_library needs aren't present (only the runtime lib*.so.<n> is). Recreate
+# them in /usr/lib (always on the linker search path), pointing at the real
+# runtime libs, so FindOpenSSL — and plain -lssl/-lcrypto — resolve.
+RUN set -eux; \
+    crypto="$(ls /usr/lib/*/libcrypto.so.* /usr/lib/libcrypto.so.* 2>/dev/null | sort | tail -1)"; \
+    ssl="$(ls /usr/lib/*/libssl.so.* /usr/lib/libssl.so.* 2>/dev/null | sort | tail -1)"; \
+    test -n "$crypto" && test -n "$ssl"; \
+    ln -sf "$crypto" /usr/lib/libcrypto.so; \
+    ln -sf "$ssl"    /usr/lib/libssl.so; \
+    ls -l /usr/lib/libcrypto.so /usr/lib/libssl.so
 
 WORKDIR /src
 # The build context must already contain the submodule working trees
