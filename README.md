@@ -33,3 +33,12 @@ cmake -S . -B build -DZT_BUILD_TESTS=ON
 cmake --build build
 ctest --test-dir build
 ```
+
+The pure command layer + tests need only a C++17 compiler (GTest is fetched if
+absent). `LocalGnmiSink` — the real gNMI backend over grace-server's
+`gnmi_client` — is opt-in and needs protobuf, libevent, libevent_openssl and
+nghttp2 (the device/Yocto toolchain has these):
+
+```sh
+cmake -S . -B build -DZT_BUILD_GNMI=ON
+```

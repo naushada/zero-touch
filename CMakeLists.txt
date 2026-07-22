@@ -5,7 +5,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(ZT_BUILD_TESTS  "Build the zero-touch gtest suite"        ON)
+option(ZT_BUILD_GNMI   "Build LocalGnmiSink (needs protobuf/libevent/nghttp2)" OFF)
 option(ZT_BUILD_DAEMON "Build the zero-touchd SMS→gNMI daemon"   OFF)
+
+# The daemon needs the real gNMI backend.
+if(ZT_BUILD_DAEMON)
+    set(ZT_BUILD_GNMI ON)
+endif()
 
 # ── reused engine: smsctl::core from the iot submodule ──────────────────────
 # Pulled in as a subproject; its own CMake exports the smsctl::core alias.
@@ -27,11 +33,66 @@ add_library(zerotouch_core STATIC
     src/gnmi_command.cpp
     src/gnmi_executor.cpp
     src/gnmi_reply.cpp
+    src/path_policy.cpp
     src/bridge.cpp)
 target_include_directories(zerotouch_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/inc)
 target_compile_options(zerotouch_core PRIVATE -Wall -Wextra)
 add_library(zerotouch::core ALIAS zerotouch_core)
+
+# ── zerotouch_gnmi: LocalGnmiSink over grace-server's gnmi_client ────────────
+# Heavy deps (protobuf, libevent, nghttp2), so it is opt-in. Reuses the
+# grace-server framework sources + gnmi/gnmi_ext protos verbatim.
+if(ZT_BUILD_GNMI)
+    find_package(Protobuf REQUIRED)
+    find_package(Threads REQUIRED)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBEVENT REQUIRED libevent)
+    pkg_check_modules(LIBEVENT_OPENSSL REQUIRED libevent_openssl)
+    pkg_check_modules(NGHTTP2 REQUIRED libnghttp2)
+
+    set(GS_APP  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/grace-server/hackthon/app)
+    set(GS_IDL  ${GS_APP}/idl)
+    set(ZT_PROTO_GEN ${CMAKE_BINARY_DIR}/proto_gen)
+    file(MAKE_DIRECTORY ${ZT_PROTO_GEN})
+
+    # gnmi imports gnmi_ext — generate both (order matters).
+    set(ZT_PROTO_SRCS
+        ${ZT_PROTO_GEN}/gnmi_ext/gnmi_ext.pb.cc
+        ${ZT_PROTO_GEN}/gnmi/gnmi.pb.cc)
+    add_custom_command(
+        OUTPUT  ${ZT_PROTO_SRCS}
+        COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+                --cpp_out=${ZT_PROTO_GEN}
+                -I${GS_IDL} -I${Protobuf_INCLUDE_DIRS}
+                ${GS_IDL}/gnmi_ext/gnmi_ext.proto ${GS_IDL}/gnmi/gnmi.proto
+        DEPENDS ${GS_IDL}/gnmi/gnmi.proto ${GS_IDL}/gnmi_ext/gnmi_ext.proto
+        COMMENT "Generating C++ from gNMI proto (gnmi, gnmi_ext)"
+        VERBATIM)
+
+    add_library(zt_gnmi_proto STATIC ${ZT_PROTO_SRCS})
+    target_include_directories(zt_gnmi_proto PUBLIC
+        ${ZT_PROTO_GEN} ${Protobuf_INCLUDE_DIRS})
+    target_link_libraries(zt_gnmi_proto PUBLIC ${Protobuf_LIBRARIES} z)
+
+    # Reused grace-server framework + gnmi_client (never modified).
+    add_library(zerotouch_gnmi STATIC
+        src/local_gnmi_sink.cpp
+        ${GS_APP}/src/gnmi_client.cpp
+        ${GS_APP}/src/grpc_session.cpp
+        ${GS_APP}/src/framework.cpp
+        ${GS_APP}/src/http2.cpp)
+    target_include_directories(zerotouch_gnmi PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_include_directories(zerotouch_gnmi PRIVATE
+        ${GS_APP}/inc ${GS_APP}/openvpn/inc
+        ${NGHTTP2_INCLUDE_DIRS} ${LIBEVENT_INCLUDE_DIRS})
+    target_link_libraries(zerotouch_gnmi PUBLIC
+        zerotouch_core zt_gnmi_proto
+        ${LIBEVENT_OPENSSL_LIBRARIES} ${LIBEVENT_LIBRARIES}
+        ${NGHTTP2_LIBRARIES} ssl crypto Threads::Threads)
+    add_library(zerotouch::gnmi ALIAS zerotouch_gnmi)
+endif()
 
 # ── tests ───────────────────────────────────────────────────────────────────
 if(ZT_BUILD_TESTS)
@@ -53,6 +114,7 @@ if(ZT_BUILD_TESTS)
         test/gnmi_command_test.cpp
         test/gnmi_executor_test.cpp
         test/gnmi_reply_test.cpp
+        test/path_policy_test.cpp
         test/bridge_test.cpp)
     target_include_directories(zerotouch-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
