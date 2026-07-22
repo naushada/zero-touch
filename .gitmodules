@@ -1,0 +1,6 @@
+[submodule "third_party/iot"]
+	path = third_party/iot
+	url = https://github.com/naushada/iot.git
+[submodule "third_party/grace-server"]
+	path = third_party/grace-server
+	url = https://github.com/naushada/grace-server.git

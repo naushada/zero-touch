@@ -1,0 +1,50 @@
+[Unit]
+Description=zero-touch device control + gNMI provisioning over MT-SMS → ds zerotouch.*
+Documentation=file:///etc/iot/zerotouchd.env
+Documentation=file:///usr/local/share/doc/zero-touch/DEPLOY.md
+# Needs ds-server up: the daemon reads zerotouch.* config + the sms.* envelopes
+# cellular-client publishes, and replies through sms.send.*. It never opens the
+# modem itself, so there is NO dependency on iot-cellular-client — it simply
+# stays idle (no inbound SMS) on a board with no modem.
+#
+# gNMI GET/SET target the DEVICE-LOCAL gNMI server on 127.0.0.1:<zerotouch.gnmi.port>.
+# That server is a separate unit; we do not hard-depend on it, so classic SMS
+# commands keep working when it is absent (gNMI commands then return ERR).
+After=network-online.target iot-ds.service
+Wants=iot-ds.service
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+
+[Service]
+Type=simple
+# Group iot grants access to the group-iot ds socket (/run/iot/data_store.sock,
+# 2775 root:iot) AND write access to /run/iot itself, where the classic engine
+# arms the privileged trigger files (reboot.request / factory-reset.request /
+# wifi-reload.request) that the ROOT .path units act on. The daemon therefore
+# needs no privilege of its own — the same bridge iot-httpd / iot-smsctld use.
+Group=iot
+EnvironmentFile=/etc/iot/zerotouchd.env
+ExecStart=/usr/local/bin/zero-touchd $ZEROTOUCH_ARGS
+
+# /run/iot is owned solely by tmpfiles.d (iot.conf, 2775 root:iot) — do NOT use
+# RuntimeDirectory=iot: it resets /run/iot on start/stop and clobbers the
+# group-iot ds socket, breaking every other daemon.
+
+Restart=on-failure
+RestartSec=10s
+
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+# NOT ProtectSystem=strict: the classic engine must create trigger files under
+# /run/iot. (/run stays writable under ProtectSystem=full.)
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target
