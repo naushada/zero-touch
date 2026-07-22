@@ -87,3 +87,7 @@ so production installs bake the daemon into the image via a Yocto recipe
 ```sh
 ./build.sh --sdk /opt/poky/<ver>/environment-setup-cortexa53-crypto-poky-linux
 ```
+
+No cross toolchain handy? `./docker-build.sh` builds the aarch64 SysV deploy
+tarball in a container (native arm64 via QEMU) and drops
+`zero-touchd-aarch64-sysv.tar.gz` in the current directory.

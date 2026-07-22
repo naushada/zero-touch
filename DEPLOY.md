@@ -111,6 +111,21 @@ reflashing:
 It prints `file`'s verdict so you can confirm the binary is `ELF 64-bit … ARM
 aarch64` before shipping.
 
+**No cross toolchain? Build in a container.** `Dockerfile` + `docker-build.sh`
+compile the daemon **natively as arm64** (via QEMU/binfmt), pulling deps from
+Debian's arm64 packages, and export the SysV deploy tarball to the host's
+current directory:
+
+```sh
+docker run --privileged --rm tonistiigi/binfmt --install arm64   # one-time
+./docker-build.sh                    # → ./zero-touchd-aarch64-sysv.tar.gz
+```
+
+The tarball is rooted at the device filesystem (`usr/bin/zero-touchd`,
+`etc/init.d/zero-touchd`, the ds schema, env, and the systemd unit). It is **not**
+copied onto a running read-only device — extract it into your image rootfs, or
+into `/run` for a tmpfs smoke test (below).
+
 ### Quick test on a running device — run from `/run` (no reflash)
 
 `/run` is writable tmpfs, so you can drop the binary there and run it directly —

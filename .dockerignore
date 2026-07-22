@@ -1,0 +1,17 @@
+# Keep the build context small — ship source, not artifacts or VCS metadata.
+build/
+build-*/
+dist/
+dist-*/
+*.tar.gz
+**/.git
+**/node_modules/
+
+# Large iot submodule assets the daemon build does not need.
+third_party/iot/iot-cloud.tar.gz
+third_party/iot/iot-ui/
+third_party/iot/yocto/
+third_party/iot/log/
+third_party/iot/build/
+third_party/iot/build-*/
+third_party/grace-server/hackthon/build/
