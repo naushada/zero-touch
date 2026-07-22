@@ -17,7 +17,13 @@ architecture.
 - Group `iot` membership (granted by the unit) for the ds socket and the
   `/run/iot` trigger files the classic engine arms.
 
-## Build (device / Yocto toolchain)
+## Build & install (writable filesystem — dev host or staging)
+
+This section is the direct `cmake --install` flow for a **writable** filesystem
+(a dev box, a container, or staging a tree you later bake into an image). For the
+**read-only production device**, skip to
+[Deploy to the device (read-only rootfs)](#deploy-to-the-device-read-only-rootfs),
+which installs via a Yocto recipe instead.
 
 `zero-touchd` needs protobuf, libevent, libevent_openssl, nghttp2, ACE and Lua —
 all present in the device toolchain. The pure command layer + host tests need
@@ -46,7 +52,8 @@ cmake --install build --prefix /usr/local
 
 Configure with `-DZT_INSTALL_SYSV=ON` to install `/etc/init.d/zero-touchd`
 (LSB-headered, uses `start-stop-daemon` when present, else a plain fork; runs the
-daemon in group `iot` just like the unit). Then:
+daemon in group `iot` just like the unit). On a **writable** filesystem register
+and start it directly:
 
 ```sh
 update-rc.d zero-touchd defaults      # or: chkconfig --add zero-touchd
@@ -54,62 +61,72 @@ update-rc.d zero-touchd defaults      # or: chkconfig --add zero-touchd
 /etc/init.d/zero-touchd status
 ```
 
-## Cross-build for aarch64 (ARMv8-A) and deploy to a SysV device
+> On a **read-only** device this registration happens at **image-build time**
+> (the Yocto recipe's `update-rc.d` class creates the `rc.d` links in the
+> image) — `update-rc.d` cannot run against the read-only rootfs at runtime.
+> See [Deploy to the device (read-only rootfs)](#deploy-to-the-device-read-only-rootfs).
 
-`build.sh` cross-compiles `zero-touchd`, stages the full install tree (binary +
-schema + env + systemd unit + **SysV init script**), and packages a tarball
-rooted at the device filesystem. The daemon's deps (ACE, protobuf, libevent,
-libevent_openssl, nghttp2, lua, openssl) come from your **sysroot** — either a
-Yocto SDK or a plain aarch64 toolchain + sysroot.
+## Deploy to the device (read-only rootfs)
 
-### 1. Build (on the build host)
+> **The device rootfs is read-only** — only `/tmp` and `/run` are writable. So
+> `zero-touchd` is installed by building it **into the image**, never by copying
+> files onto a running device: you cannot write `/usr/bin`, `/etc/init.d` or
+> `/lib/systemd/system`, and `update-rc.d` / `systemctl enable` fail at runtime
+> because they create symlinks under the read-only rootfs.
+
+The daemon is designed for this: it writes **nothing** to the rootfs. Its only
+runtime writes are the SysV PID file (`/run/zero-touchd.pid`) and the classic
+engine's trigger files (`/run/iot/*.request`) — both on tmpfs — and its
+persistent config lives in ds-server's store on the data partition.
+
+### Production — bake into the image (Yocto recipe)
+
+Use `packaging/yocto/zero-touchd_git.bb` (see `packaging/yocto/README.md`). Drop
+it into a layer and add the package to your image:
+
+```bitbake
+IMAGE_INSTALL:append = " zero-touchd"
+```
+
+The recipe cross-compiles the daemon (deps — ACE, protobuf, libevent, nghttp2,
+lua, openssl — from the sysroot) and lays the binary, `zerotouch.lua` schema,
+env file and service into the rootfs. On **systemd** images it registers and
+auto-enables `zero-touchd.service`; on **SysV** images it installs
+`/etc/init.d/zero-touchd` and creates the `rc.d` links **at image-build time**.
+Either way the daemon ships **inert** (`zerotouch.enabled=false`) until you flip
+the ds key. Rebuild the image and flash / A-B OTA as usual.
+
+### Cross-build just the binary (dev loop / tmpfs test)
+
+`build.sh` cross-compiles `zero-touchd` and stages a tree + tarball. Use it to
+feed the recipe's dev loop, or to smoke-test a binary on a running device without
+reflashing:
 
 ```sh
-# Recommended — Yocto SDK (deps + toolchain from the SDK sysroot):
+# Yocto SDK (recommended) or a plain cross toolchain + sysroot:
 ./build.sh --sdk /opt/poky/<ver>/environment-setup-cortexa53-crypto-poky-linux
-
-# or a plain cross toolchain + a target sysroot:
 ./build.sh --sysroot /path/to/aarch64-sysroot --prefix aarch64-linux-gnu-
 ```
 
-Output:
+It prints `file`'s verdict so you can confirm the binary is `ELF 64-bit … ARM
+aarch64` before shipping.
 
-- `dist/aarch64/…` — staged tree (`./usr/local/bin/zero-touchd`,
-  `./etc/iot/ds-schemas/zerotouch.lua`, `./etc/iot/zerotouchd.env`,
-  `./etc/init.d/zero-touchd`, `./lib/systemd/system/zero-touchd.service`, doc).
-- `zero-touchd-aarch64.tar.gz` — the same tree, ready to ship.
+### Quick test on a running device — run from `/run` (no reflash)
 
-The script prints `file`'s verdict on the binary so you can confirm it is
-`ELF 64-bit … ARM aarch64` before shipping.
-
-### 2. Copy to the device
+`/run` is writable tmpfs, so you can drop the binary there and run it directly —
+no init script, no rootfs writes, gone on reboot. This exercises the real daemon
+against the device's ds + gNMI server; the `zerotouch.*` schema must already be
+in the image (from the recipe) for `ds-cli set` to validate.
 
 ```sh
-scp zero-touchd-aarch64.tar.gz root@<device>:/tmp/
+scp dist/aarch64/usr/bin/zero-touchd root@<device>:/run/
+ssh root@<device> 'chmod +x /run/zero-touchd && /run/zero-touchd &'
 ```
 
-### 3. Install on the device
-
-The tarball is rooted at `/`, so extraction drops every file in place — the
-**SysV init script lands at `/etc/init.d/zero-touchd`**:
-
-```sh
-ssh root@<device>
-cd / && tar xzf /tmp/zero-touchd-aarch64.tar.gz     # binary, schema, env, init.d/, unit
-chmod +x /etc/init.d/zero-touchd                    # ensure executable
-
-# Register with the SysV runlevels (pick what the distro ships):
-update-rc.d zero-touchd defaults                    # Debian/BusyBox
-# chkconfig --add zero-touchd                        # RPM/SysV
-```
-
-`ds-server` reloads `/etc/iot/ds-schemas/zerotouch.lua` automatically (restart it
-if it does not watch the directory), registering the `zerotouch.*` defaults.
-
-### 4. Point it at the on-device gNMI server
+### Point it at the on-device gNMI server
 
 `zero-touchd` is a gNMI **client** of the server this device already runs. Set
-the port to match that server's listen port on loopback:
+the port to match that server's loopback listen port:
 
 ```sh
 ds-cli set zerotouch.gnmi.port 50051                # match the local gNMI server
@@ -117,26 +134,25 @@ ds-cli set zerotouch.gnmi.port 50051                # match the local gNMI serve
 
 The target host is fixed at `127.0.0.1` and is never taken from the SMS. gNMI
 `GET`/`SET` only work while that server is listening; classic SMS commands work
-regardless. To guarantee the gNMI server starts first, add its init-script name
-to the `# Required-Start:` line of `/etc/init.d/zero-touchd` (it already lists
-`iot-ds`), e.g. `# Required-Start: $network $local_fs iot-ds gnmi-server`, then
-re-run `update-rc.d zero-touchd defaults`.
+regardless. For start ordering, add the gNMI server's unit / init name to the
+service's dependency line (systemd `After=`, or the init script's
+`# Required-Start:`, which already lists `iot-ds`) **in the source before you
+build the image** — it cannot be edited on the read-only device.
 
-### 5. Enable and start
+### Enable and start
 
 ```sh
 ds-cli set zerotouch.enabled true
 ds-cli set zerotouch.allowed.numbers '"+919096383701"'
-/etc/init.d/zero-touchd start
-/etc/init.d/zero-touchd status                      # → running (pid …)
+
+# systemd image (already enabled at image build → starts at boot):
+systemctl restart zero-touchd.service ; systemctl status zero-touchd.service
+# SysV image:
+/etc/init.d/zero-touchd restart ; /etc/init.d/zero-touchd status
 ```
 
 `zerotouch.state` flips to `listening`. Text `IOT GNMI GET /system/config/hostname`
 from an allowlisted phone to confirm the round trip.
-
-> On a systemd device, skip the init script and use
-> `systemctl enable --now zero-touchd.service` instead — the same tarball ships
-> both.
 
 ## Test the command grammar offline first
 

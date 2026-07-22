@@ -78,10 +78,11 @@ cmake -S . -B build -DZT_BUILD_DS=ON
 
 `-DZT_BUILD_DAEMON=ON` implies both `ZT_BUILD_GNMI` and `ZT_BUILD_DS`.
 
-To cross-compile the daemon for an **aarch64 (ARMv8-A)** device and stage a
-deployable tarball (binary + schema + env + systemd unit + SysV init script),
-use `build.sh` with a Yocto SDK or a cross toolchain + sysroot — see
-[DEPLOY.md](DEPLOY.md#cross-build-for-aarch64-armv8-a-and-deploy-to-a-sysv-device):
+To cross-compile the daemon for an **aarch64 (ARMv8-A)** device, use `build.sh`
+with a Yocto SDK or a cross toolchain + sysroot. The device rootfs is read-only,
+so production installs bake the daemon into the image via a Yocto recipe
+(`packaging/yocto/`) — see
+[DEPLOY.md](DEPLOY.md#deploy-to-the-device-read-only-rootfs):
 
 ```sh
 ./build.sh --sdk /opt/poky/<ver>/environment-setup-cortexa53-crypto-poky-linux
