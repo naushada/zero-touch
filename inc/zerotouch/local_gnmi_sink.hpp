@@ -35,7 +35,11 @@ public:
         std::vector<std::string> deny_tokens;  ///< empty → default_deny_tokens()
     };
 
-    explicit LocalGnmiSink(Config cfg = {}) : m_cfg(std::move(cfg)) {}
+    // Two constructors rather than `Config cfg = {}`: GCC rejects an empty-brace
+    // default argument for an aggregate that has default member initializers
+    // (Clang accepts it). `= default` picks up the Config NSDMIs for the port etc.
+    LocalGnmiSink() = default;
+    explicit LocalGnmiSink(Config cfg) : m_cfg(std::move(cfg)) {}
 
     /// Hot-apply config (e.g. a changed gnmi port). Safe because the executor
     /// holds a stable reference to this sink; only its config is swapped.

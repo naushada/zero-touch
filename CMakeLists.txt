@@ -55,6 +55,9 @@ if(ZT_BUILD_GNMI)
     pkg_check_modules(LIBEVENT REQUIRED libevent)
     pkg_check_modules(LIBEVENT_OPENSSL REQUIRED libevent_openssl)
     pkg_check_modules(NGHTTP2 REQUIRED libnghttp2)
+    # grace-server's framework.cpp pulls in fs_app.hpp → lua_engine.hpp
+    # (<lua.hpp> + inline luaL_* calls), so the gnmi lib needs Lua's headers/libs.
+    find_package(Lua REQUIRED)
 
     set(GS_APP  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/grace-server/hackthon/app)
     set(GS_IDL  ${GS_APP}/idl)
@@ -91,11 +94,11 @@ if(ZT_BUILD_GNMI)
         ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_include_directories(zerotouch_gnmi PRIVATE
         ${GS_APP}/inc ${GS_APP}/openvpn/inc
-        ${NGHTTP2_INCLUDE_DIRS} ${LIBEVENT_INCLUDE_DIRS})
+        ${NGHTTP2_INCLUDE_DIRS} ${LIBEVENT_INCLUDE_DIRS} ${LUA_INCLUDE_DIR})
     target_link_libraries(zerotouch_gnmi PUBLIC
         zerotouch_core zt_gnmi_proto
         ${LIBEVENT_OPENSSL_LIBRARIES} ${LIBEVENT_LIBRARIES}
-        ${NGHTTP2_LIBRARIES} ssl crypto Threads::Threads)
+        ${NGHTTP2_LIBRARIES} ${LUA_LIBRARIES} ssl crypto Threads::Threads)
     add_library(zerotouch::gnmi ALIAS zerotouch_gnmi)
 endif()
 
