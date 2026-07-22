@@ -5,9 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(ZT_BUILD_TESTS  "Build the zero-touch gtest suite"        ON)
+option(ZT_BUILD_SIM    "Build zerotouch-sim, the offline SMS simulator"       ON)
 option(ZT_BUILD_GNMI   "Build LocalGnmiSink (needs protobuf/libevent/nghttp2)" OFF)
 option(ZT_BUILD_DS     "Build DsSmsTransport (needs ACE + datastore_client)"   OFF)
 option(ZT_BUILD_DAEMON "Build the zero-touchd SMS→gNMI daemon"   OFF)
+option(ZT_INSTALL_SYSV "Install the SysV init script instead of/alongside systemd" OFF)
 
 # The daemon needs the real gNMI backend and the ds SMS transport.
 if(ZT_BUILD_DAEMON)
@@ -120,6 +122,25 @@ if(ZT_BUILD_DS)
     add_library(zerotouch::ds ALIAS zerotouch_ds)
 endif()
 
+# ── zerotouch-sim: offline SMS simulator (host tool, no modem/ds/gRPC) ───────
+# Uses the real smsctl engine (needs smsctl::core + iot's json single_include)
+# with in-memory ds/gNMI backends. Skips gracefully if the json submodule is not
+# initialised, so the pure test build never breaks.
+if(ZT_BUILD_SIM)
+    set(ZT_SIM_JSON
+        ${IOT_SMSCTL_DIR}/../../apps/3rdparty/json/single_include/nlohmann/json.hpp)
+    if(TARGET smsctl_core AND EXISTS ${ZT_SIM_JSON})
+        add_executable(zerotouch-sim sim/zt_sim.cpp)
+        target_include_directories(zerotouch-sim PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc ${IOT_SMSCTL_DIR}/inc)
+        target_link_libraries(zerotouch-sim PRIVATE zerotouch_core smsctl_core)
+        target_compile_options(zerotouch-sim PRIVATE -Wall -Wextra)
+    else()
+        message(STATUS "zerotouch-sim skipped — run: "
+                       "git submodule update --init --recursive")
+    endif()
+endif()
+
 # ── tests ───────────────────────────────────────────────────────────────────
 if(ZT_BUILD_TESTS)
     # Prefer a system GTest; otherwise fetch a pinned copy so the suite builds
@@ -197,6 +218,11 @@ if(ZT_BUILD_DAEMON)
             DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/iot)
     install(FILES packaging/systemd/zero-touchd.service
             DESTINATION ${ZT_SYSTEMD_DIR})
+    # SysV init script for boards without systemd (opt-in).
+    if(ZT_INSTALL_SYSV)
+        install(PROGRAMS packaging/sysv/zero-touchd
+                DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/init.d)
+    endif()
     # DEPLOY doc referenced by the unit's Documentation= line.
     install(FILES DEPLOY.md
             DESTINATION ${CMAKE_INSTALL_FULL_DATADIR}/doc/zero-touch)

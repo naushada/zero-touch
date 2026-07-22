@@ -85,10 +85,12 @@ GnmiResult LocalGnmiSink::get(const std::vector<std::string>& xpaths) {
             out.paths.push_back({gnmi_util::path_to_string(u.path()),
                                  gnmi_util::typed_value_to_string(u.val()), ""});
 
-    // ok only when no per-path row carries an error (e.g. the denied rows).
+    // The RPC succeeded, so ok=true: any per-path error rows (e.g. the denied
+    // paths added above) are rendered by format_get's OK branch as `<error>`,
+    // which is exactly how a sensitive value stays masked. Flipping ok=false
+    // here would instead collapse the whole reply to "ERR GNMI GET" and hide
+    // the successfully-read leaves.
     out.ok = true;
-    for (const auto& p : out.paths)
-        if (!p.error.empty()) { out.ok = false; break; }
     return out;
 }
 
