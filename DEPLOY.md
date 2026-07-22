@@ -117,8 +117,16 @@ Debian's arm64 packages, and export the SysV deploy tarball to the host's
 current directory:
 
 ```sh
-docker run --privileged --rm tonistiigi/binfmt --install arm64   # one-time
 ./docker-build.sh                    # → ./zero-touchd-aarch64-sysv.tar.gz
+```
+
+`docker-build.sh` auto-registers QEMU arm64 emulation and a `docker-container`
+buildx builder. If you hit `exec /bin/sh: exec format error`, the arm64 binfmt
+handler isn't registered — the script installs it (one-off `--privileged`
+helper); to do it by hand or on a fresh host:
+
+```sh
+docker run --privileged --rm tonistiigi/binfmt --install arm64
 ```
 
 The tarball is rooted at the device filesystem (`usr/bin/zero-touchd`,
