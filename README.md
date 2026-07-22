@@ -13,7 +13,8 @@ and `zero-touchd` authenticates the sender, runs the corresponding gNMI
 It is an integrator: it reuses the `smsctl` engine (from **iot**) and the
 `gnmi_client` (from **grace-server**) as git submodules, both unmodified.
 
-See [DESIGN.md](DESIGN.md) for the architecture and phase plan.
+See [DESIGN.md](DESIGN.md) for the architecture and [DEPLOY.md](DEPLOY.md) for
+deploying `zero-touchd` on a device.
 
 ## Layout
 
@@ -22,6 +23,8 @@ inc/zerotouch/   ISmsTransport, GnmiSink, gnmi_command   (the two interface seam
 src/             gnmi command layer + transport/sink impls
 daemon/          zero-touchd
 test/            host tests (mocks: no modem, no gRPC)
+schemas/         zerotouch.lua — ds key schema + defaults
+packaging/       systemd unit + env file
 third_party/     iot, grace-server (submodules)
 ```
 

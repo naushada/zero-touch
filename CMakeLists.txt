@@ -183,5 +183,21 @@ if(ZT_BUILD_DAEMON)
     target_compile_options(zero-touchd PRIVATE -Wall -Wextra)
 
     include(GNUInstallDirs)
+    # systemd unit dir (override with -DZT_SYSTEMD_DIR=… for the target sysroot).
+    if(NOT DEFINED ZT_SYSTEMD_DIR)
+        set(ZT_SYSTEMD_DIR /lib/systemd/system)
+    endif()
+
     install(TARGETS zero-touchd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    # ds schema — ds-server auto-loads everything under /etc/iot/ds-schemas.
+    install(FILES schemas/zerotouch.lua
+            DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/iot/ds-schemas)
+    # env file + systemd unit.
+    install(FILES packaging/etc-iot/zerotouchd.env
+            DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/iot)
+    install(FILES packaging/systemd/zero-touchd.service
+            DESTINATION ${ZT_SYSTEMD_DIR})
+    # DEPLOY doc referenced by the unit's Documentation= line.
+    install(FILES DEPLOY.md
+            DESTINATION ${CMAKE_INSTALL_FULL_DATADIR}/doc/zero-touch)
 endif()
