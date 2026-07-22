@@ -10,7 +10,10 @@
 #
 # Build + export to the host's current directory:
 #   ./docker-build.sh            # → ./zero-touchd-aarch64-sysv.tar.gz
-# or directly:
+#                                # (auto-sets up QEMU binfmt + a buildx builder)
+# or directly (requires arm64 binfmt already registered — otherwise the first
+# RUN fails with "exec format error"):
+#   docker run --privileged --rm tonistiigi/binfmt --install arm64
 #   docker buildx build --platform linux/arm64 \
 #     --target export --output type=local,dest=. .
 #
