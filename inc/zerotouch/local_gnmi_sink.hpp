@@ -37,6 +37,11 @@ public:
 
     explicit LocalGnmiSink(Config cfg = {}) : m_cfg(std::move(cfg)) {}
 
+    /// Hot-apply config (e.g. a changed gnmi port). Safe because the executor
+    /// holds a stable reference to this sink; only its config is swapped.
+    void set_config(Config cfg) { m_cfg = std::move(cfg); }
+    const Config& config() const { return m_cfg; }
+
     GnmiResult get(const std::vector<std::string>& xpaths) override;
     GnmiResult set(
         const std::vector<std::pair<std::string, std::string>>& updates) override;

@@ -30,12 +30,17 @@ using TokenizeFn = std::function<std::vector<std::string>(const std::string&)>;
 using FallbackFn =
     std::function<std::string(const std::string& sender, const std::string& text)>;
 
+/// Gate a sender before any processing. False → drop the message in SILENCE (no
+/// reply, no execution), so the device is not an oracle and carrier spam costs
+/// nothing. The daemon binds this to "enabled AND sender on the allowlist".
+using AllowFn = std::function<bool(const std::string& sender)>;
+
 class Bridge {
 public:
     Bridge(ISmsTransport& tx, GnmiExecutor& gex, TokenizeFn tokenize,
-           FallbackFn fallback = {})
+           FallbackFn fallback = {}, AllowFn allow = {})
       : m_tx(tx), m_gex(gex), m_tok(std::move(tokenize)),
-        m_fallback(std::move(fallback)) {}
+        m_fallback(std::move(fallback)), m_allow(std::move(allow)) {}
 
     /// Register the inbound handler and start the transport.
     void start();
@@ -49,6 +54,7 @@ private:
     GnmiExecutor&  m_gex;
     TokenizeFn     m_tok;
     FallbackFn     m_fallback;
+    AllowFn        m_allow;
 };
 
 } // namespace zerotouch

@@ -152,10 +152,36 @@ if(ZT_BUILD_TESTS)
     add_test(NAME zerotouch-tests COMMAND zerotouch-tests)
 endif()
 
-# ── zero-touchd daemon (Phases 4-6; needs ACE + libevent + gnmi_client) ─────
+# ── zero-touchd daemon ──────────────────────────────────────────────────────
+# Composes both seams: zerotouch_ds (SMS in/out) + zerotouch_gnmi (LocalGnmiSink)
+# + smsctl::core (classic engine + tokenize/session) over one ds Client + reactor.
+# ZT_BUILD_DAEMON implied ZT_BUILD_GNMI and ZT_BUILD_DS above, so those targets
+# and their deps (protobuf/libevent/nghttp2, ACE/datastore) already exist.
 if(ZT_BUILD_DAEMON)
-    message(STATUS "zero-touchd build wiring lands in phases 4-6")
-    # add_subdirectory(third_party/grace-server/hackthon/app ...)  # gnmi_client
-    # add_executable(zero-touchd daemon/main.cpp src/ds_sms_transport.cpp
-    #                src/local_gnmi_sink.cpp src/bridge.cpp)
+    if(NOT DEFINED ACE_ROOT)
+        set(ACE_ROOT /usr/local/ACE_TAO-7.0.0)
+    endif()
+    # nlohmann/json for lookup_account (auth.users.accounts) — from the iot
+    # submodule (needs recursive submodule init).
+    set(ZT_JSON_INC
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iot/apps/3rdparty/json/single_include)
+
+    add_executable(zero-touchd
+        daemon/main.cpp
+        daemon/zerotouchd.cpp)
+    target_include_directories(zero-touchd PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/daemon
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${IOT_SMSCTL_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iot/modules/data-store/inc
+        ${ZT_JSON_INC}
+        ${ACE_ROOT}/include)
+    target_link_directories(zero-touchd PRIVATE ${ACE_ROOT}/lib)
+    target_link_libraries(zero-touchd PRIVATE
+        zerotouch_core zerotouch_gnmi zerotouch_ds
+        smsctl_core datastore_client ACE pthread)
+    target_compile_options(zero-touchd PRIVATE -Wall -Wextra)
+
+    include(GNUInstallDirs)
+    install(TARGETS zero-touchd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()

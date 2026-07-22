@@ -146,5 +146,5 @@ IOT GNMI SET <xpath[,xpath...]> <value[,value...]>   # positional pairing
 3. **gNMI command layer** — parser (GET/SET grammar, count-mismatch), executor (auth via shared `SessionStore`, request-building via `gnmi_util`), reply formatter. Tests vs `MockGnmiSink`.
 4. **LocalGnmiSink** — real `gnmi_client::call()` to `127.0.0.1:<port>`, decode `GetResponse`/`SetResponse`, denylist.
 5. **DsSmsTransport** — port `smsctl_client`'s ds watch/drain/publish behind the interface.
-6. **zero-touchd** — compose shared `SessionStore` + `smsctl::Executor` + gnmi layer + transport on the ACE reactor. Config keys: `zerotouch.enabled` (ships false), `gnmi.local.port`, allowed numbers, session TTL.
+6. **zero-touchd** — compose shared `SessionStore` + `smsctl::Executor` + gnmi layer + transport on the ACE reactor. Config keys (hot-applied): `zerotouch.enabled` (ships false), `zerotouch.gnmi.port`, `zerotouch.allowed.numbers`, `zerotouch.session.ttl.sec`, `zerotouch.lockout.{failures,sec}`. A single `IOT LOGIN` (against `auth.users.*`) authorises both gnmi and classic commands; a disabled or non-allowlisted sender is dropped in silence.
 7. **Packaging** — systemd unit, ds schema (`zerotouch.lua`), DEPLOY notes.

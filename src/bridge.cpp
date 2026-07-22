@@ -15,6 +15,10 @@ void Bridge::start() {
 }
 
 void Bridge::on_sms(const InboundSms& in) {
+    // Allowlist / enabled gate: a disallowed sender is dropped in silence,
+    // before we tokenise or reply, for both gnmi and classic commands.
+    if (m_allow && !m_allow(in.sender)) return;
+
     const auto tokens = m_tok ? m_tok(in.text) : std::vector<std::string>{};
     const GnmiCommand g = parse_gnmi(tokens);
 

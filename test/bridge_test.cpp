@@ -65,6 +65,34 @@ TEST(Bridge, NonGnmiWithoutFallbackIsDroppedSilently) {
     EXPECT_TRUE(tx.sent.empty());
 }
 
+TEST(Bridge, DisallowedSenderIsDroppedSilently) {
+    MockTransport tx;
+    MockGnmiSink sink;
+    sink.next.ok = true;
+    sink.next.paths = {{"/a", "1", ""}};
+    GnmiExecutor gex(sink, [](const std::string&) { return Access::Admin; });
+
+    bool fallback_called = false;
+    Bridge b(tx, gex, ws_tokenize,
+             [&](const std::string&, const std::string&) {
+                 fallback_called = true;
+                 return std::string("OK");
+             },
+             [](const std::string& sender) { return sender == "+allowed"; });
+
+    // Disallowed sender: no gnmi call, no fallback, no reply.
+    b.on_sms({"+blocked", "IOT GNMI GET /a", "t0"});
+    b.on_sms({"+blocked", "IOT STATUS", "t1"});
+    EXPECT_TRUE(tx.sent.empty());
+    EXPECT_TRUE(sink.last_get.empty());
+    EXPECT_FALSE(fallback_called);
+
+    // Allowed sender: processed normally.
+    b.on_sms({"+allowed", "IOT GNMI GET /a", "t2"});
+    ASSERT_EQ(tx.sent.size(), 1u);
+    EXPECT_EQ(tx.sent[0].text, "OK GNMI GET /a=1");
+}
+
 TEST(Bridge, EmptyReplyIsNotSent) {
     MockTransport tx;
     MockGnmiSink sink;
