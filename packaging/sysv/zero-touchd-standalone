@@ -1,0 +1,59 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          zero-touchd-standalone
+# Required-Start:    $network $local_fs
+# Required-Stop:     $network $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: zero-touch standalone gNMI-over-SMS appliance
+# Description:       Self-contained (no ds-server / cellular-client): opens the
+#                    modem directly and provisions the device-local gNMI server
+#                    from authenticated SMS. Inert until enabled=true in the config.
+### END INIT INFO
+#
+# SysV / BusyBox init for boards without systemd. Registered + rc.d-linked at
+# image-build time on a read-only device (see DEPLOY.md).
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+NAME=zero-touchd-standalone
+DAEMON=/usr/bin/zero-touchd-standalone
+CONF=/etc/zerotouch/zerotouch.conf
+PIDFILE=/run/$NAME.pid
+
+test -x "$DAEMON" || { echo "$NAME: $DAEMON not installed" >&2; exit 5; }
+
+have_ssd() { command -v start-stop-daemon >/dev/null 2>&1; }
+is_running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }
+
+start() {
+    is_running && { echo "$NAME already running (pid $(cat "$PIDFILE"))"; return 0; }
+    echo "Starting $NAME"
+    if have_ssd; then
+        start-stop-daemon --start --quiet --background \
+            --make-pidfile --pidfile "$PIDFILE" \
+            --exec "$DAEMON" -- --config="$CONF"
+    else
+        "$DAEMON" --config="$CONF" & echo $! > "$PIDFILE"
+    fi
+}
+
+stop() {
+    is_running || { echo "$NAME not running"; rm -f "$PIDFILE"; return 0; }
+    echo "Stopping $NAME"
+    if have_ssd; then
+        start-stop-daemon --stop --quiet --pidfile "$PIDFILE" --retry TERM/10/KILL/5
+    else
+        kill "$(cat "$PIDFILE")" 2>/dev/null
+    fi
+    rm -f "$PIDFILE"
+}
+
+case "$1" in
+    start)                start ;;
+    stop)                 stop ;;
+    restart|force-reload) stop; sleep 1; start ;;
+    status)               is_running && echo "$NAME running (pid $(cat "$PIDFILE"))" && exit 0
+                          echo "$NAME stopped"; exit 3 ;;
+    *)  echo "Usage: $0 {start|stop|restart|force-reload|status}" >&2; exit 2 ;;
+esac
+exit 0

@@ -1,0 +1,33 @@
+[Unit]
+Description=zero-touch standalone gNMI-over-SMS appliance (ds-free)
+Documentation=file:///etc/zerotouch/zerotouch.conf
+# Self-contained: no ds-server, no cellular-client. It opens the modem directly
+# and talks to the device-local gNMI server on 127.0.0.1. Order after that gNMI
+# server's unit if you have one (classic SMS commands work without it).
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/zero-touchd-standalone --config=/etc/zerotouch/zerotouch.conf
+Restart=on-failure
+RestartSec=10s
+
+# Needs the modem tty (dialout) and reboot capability (IOT REBOOT).
+SupplementaryGroups=dialout
+AmbientCapabilities=CAP_SYS_BOOT
+CapabilityBoundingSet=CAP_SYS_BOOT
+
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target
