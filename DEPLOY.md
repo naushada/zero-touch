@@ -169,8 +169,8 @@ into `/run` for a tmpfs smoke test (below).
 
 The **SysV init script itself needs no sysroot** — it's a shell script the recipe
 installs. The sysroot is only for cross-compiling the **binary**, which links the
-device's ACE, protobuf, libevent, nghttp2, lua and openssl. Three ways, best-first
-for a Yocto device:
+device's ACE, protobuf, libevent, nghttp2, lua and openssl. There is no pre-made
+sysroot to point at — you produce one. Ways, best-first for a Yocto device:
 
 1. **Don't get one — build via the Yocto recipe.** For the read-only Yocto
    device this is the production path (see *Production — bake into the image*
@@ -195,15 +195,42 @@ for a Yocto device:
    TOOLCHAIN_TARGET_TASK:append = " ace-tao-dev protobuf-dev libevent-dev libnghttp2-dev lua-dev openssl-dev zlib-dev"
    ```
 
-3. **No sysroot at all — build in a container** (`docker-build.sh` /
+3. **Assemble a Debian arm64 sysroot** (for `build.sh --sysroot`, no Yocto). Export
+   an arm64 Debian rootfs that already has the `-dev` deps, then cross-compile
+   against it with a host cross toolchain:
+
+   ```sh
+   # 1. an arm64 image with the deps (native arm64 via QEMU)
+   printf 'FROM --platform=linux/arm64 debian:bookworm-slim\nRUN apt-get update && \
+     apt-get install -y --no-install-recommends libace-dev libssl-dev libssl3 \
+     libprotobuf-dev protobuf-compiler libevent-dev libnghttp2-dev liblua5.4-dev \
+     zlib1g-dev\n' > /tmp/sr.Dockerfile
+   docker build --platform linux/arm64 -f /tmp/sr.Dockerfile -t zt-sysroot /tmp
+
+   # 2. export its rootfs as the sysroot
+   cid=$(docker create --platform linux/arm64 zt-sysroot)
+   mkdir -p arm64-sysroot && docker export "$cid" | sudo tar -x -C arm64-sysroot
+   docker rm "$cid"
+
+   # 3. host cross toolchain + build
+   sudo apt-get install -y crossbuild-essential-arm64
+   ./build.sh --sysroot "$PWD/arm64-sysroot" --prefix aarch64-linux-gnu-   # + --standalone
+   ```
+
+   Same Debian-version caveat as the container build (ACE 6.5.x).
+
+4. **No sysroot at all — build in a container** (`docker-build.sh` /
    `Dockerfile.standalone`, native arm64 via QEMU + Debian packages; above).
-   Easiest for a quick artifact, but the deps are Debian's versions (ACE 6.5.x),
-   not your device's exact builds — fine for the self-contained appliance, less
-   exact for the integrated daemon on the real device.
+   Easiest for a quick artifact. **This is exactly what (3) does internally**, so
+   prefer it unless you specifically want a sysroot you control/inspect.
+
+Which to use: **(1)/(2)** for the integrated daemon on the production iot device
+(exact device libraries); **(3)/(4)** for a working aarch64 binary fast (Debian
+libraries — fine for the self-contained appliance).
 
 > **Don't** rsync/tar the device rootfs as a sysroot on its own — a shipped image
 > has runtime libs but no `-dev` headers, so it won't compile. Use the SDK (which
-> includes the headers) or the recipe.
+> includes the headers), the recipe, or an assembled `-dev` sysroot (3).
 
 ### Quick test on a running device — run from `/run` (no reflash)
 
