@@ -281,11 +281,14 @@ if(ZT_BUILD_STANDALONE)
     endif()
     set(GS_CELL ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iot/modules/wan/cellular)
 
-    # AtModem + the reused, pure PDU codec / reassembler from wan/cellular.
+    # AtModem + modem factory + the reused, pure PDU codec / AT parser (vendor
+    # detection) / reassembler from wan/cellular.
     add_library(zerotouch_atmodem STATIC
         src/at_modem.cpp
+        src/modem_factory.cpp
         ${GS_CELL}/src/sms_pdu.cpp
-        ${GS_CELL}/src/sms_receiver.cpp)
+        ${GS_CELL}/src/sms_receiver.cpp
+        ${GS_CELL}/src/at_parser.cpp)
     target_include_directories(zerotouch_atmodem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_include_directories(zerotouch_atmodem PRIVATE ${GS_CELL}/inc ${ACE_ROOT}/include)
     target_link_directories(zerotouch_atmodem PUBLIC ${ACE_ROOT}/lib)

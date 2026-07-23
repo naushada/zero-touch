@@ -349,6 +349,7 @@ gnmi.port       = 50051            # match the on-device gNMI server
 allowed.numbers = +919096383701    # CSV of E.164 senders; empty = any may login
 modem.dev       = /dev/ttyUSB2
 modem.baud      = 115200
+modem.type      = auto             # auto | sierra | quectel | ublox | generic (WP7702 = sierra)
 ```
 
 `/etc/zerotouch/users` — one `id:sha256:access` per line (Admin required for

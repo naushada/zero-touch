@@ -31,6 +31,11 @@ std::uint32_t to_u32(const std::string& v, std::uint32_t dflt) {
     return dflt;
 }
 
+std::string lower(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
 std::vector<std::string> split_csv(const std::string& s) {
     std::vector<std::string> out;
     std::string cur;
@@ -43,6 +48,26 @@ std::vector<std::string> split_csv(const std::string& s) {
 }
 
 } // namespace
+
+ModemType parse_modem_type(const std::string& s) {
+    const std::string v = lower(s);
+    if (v == "sierra")  return ModemType::Sierra;
+    if (v == "quectel") return ModemType::Quectel;
+    if (v == "ublox" || v == "u-blox") return ModemType::UBlox;
+    if (v == "generic") return ModemType::Generic;
+    return ModemType::Auto;   // "auto", empty, or unknown
+}
+
+const char* modem_type_name(ModemType t) {
+    switch (t) {
+        case ModemType::Sierra:  return "sierra";
+        case ModemType::Quectel: return "quectel";
+        case ModemType::UBlox:   return "ublox";
+        case ModemType::Generic: return "generic";
+        case ModemType::Auto:    return "auto";
+    }
+    return "auto";
+}
 
 AppConfig parse_config(const std::string& text) {
     AppConfig c;
@@ -68,6 +93,7 @@ AppConfig parse_config(const std::string& text) {
         else if (key == "lockout.sec")      c.lockout_sec      = to_u32(val, c.lockout_sec);
         else if (key == "modem.dev")        c.modem_dev        = val;
         else if (key == "modem.baud")       c.modem_baud       = to_u32(val, c.modem_baud);
+        else if (key == "modem.type")       c.modem_type       = parse_modem_type(val);
         else if (key == "users.file")       c.users_file       = val;
         // unknown keys: ignored
     }

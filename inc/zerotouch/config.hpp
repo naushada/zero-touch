@@ -17,6 +17,16 @@
 
 namespace zerotouch {
 
+/// Modem family selection. `Auto` detects the vendor at runtime (AT+GMI/CGMM →
+/// cellular::parse_vendor); the rest force it. The AT command set is ~standard
+/// 3GPP for SMS, so this mainly future-proofs vendor-specific quirks and drives
+/// logging — WP7702 is Sierra.
+enum class ModemType { Auto, Sierra, Quectel, UBlox, Generic };
+
+/// Parse a `modem.type` value (case-insensitive); unknown/empty → Auto.
+ModemType   parse_modem_type(const std::string& s);
+const char* modem_type_name(ModemType t);
+
 struct AppConfig {
     bool          enabled          = false;        ///< inert until true
     std::string   gnmi_host        = "127.0.0.1";  ///< device-local gNMI target
@@ -27,12 +37,13 @@ struct AppConfig {
     std::uint32_t lockout_sec      = 900;
     std::string   modem_dev        = "/dev/ttyUSB2"; ///< AT channel
     std::uint32_t modem_baud       = 115200;
+    ModemType     modem_type       = ModemType::Auto;
     std::string   users_file       = "/etc/zerotouch/users";
 };
 
 /// Recognised keys: enabled, gnmi.host, gnmi.port, allowed.numbers (CSV),
 /// session.ttl.sec, lockout.failures, lockout.sec, modem.dev, modem.baud,
-/// users.file. Absent keys keep their default.
+/// modem.type, users.file. Absent keys keep their default.
 AppConfig parse_config(const std::string& text);
 
 } // namespace zerotouch
