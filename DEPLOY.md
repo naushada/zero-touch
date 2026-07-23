@@ -497,10 +497,20 @@ tests.
 
 ## Test the command grammar offline first
 
-Before touching a device, drive the exact same engine from a keyboard with
-`zerotouch-sim` (host build, no modem/ds/gRPC) — see the README. It's the
-fastest way to learn the `IOT GNMI …` grammar and confirm the sensitive-path
-denial and allowlist/enabled gating behave as you expect.
+Before touching a device, drive the exact same engine from a keyboard with the
+simulator — it wires the **real** `Bridge` behind an in-process transport, so
+each line lands straight at `Bridge::on_sms` (no modem, ds-server, or gRPC;
+in-memory gNMI):
+
+```sh
+./sim.sh          # builds + runs the zerotouch-sim container (SIM banner + REPL)
+./sim.sh sh       # a shell in the same container
+# native (no Docker): cmake -S . -B build -DZT_BUILD_SIM=ON && ./build/zerotouch-sim
+```
+
+It's the fastest way to learn the `IOT GNMI …` grammar and confirm the
+sensitive-path denial and allowlist/enabled gating behave as you expect. See the
+README for a sample session.
 
 ## Enable
 
