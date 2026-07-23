@@ -1,5 +1,15 @@
 # Deploying zero-touchd
 
+Two deployment shapes ship from this repo, riding the same interface seams —
+pick one:
+
+- **`zero-touchd` (iot-integrated)** — rides an existing iot stack (ds-server +
+  cellular-client): config/users/SMS all come through ds. Everything below up to
+  the standalone section covers this variant.
+- **`zero-touchd-standalone` (ds-free appliance)** — one daemon, no ds-server, no
+  cellular-client: it opens the modem directly and reads config/users from files.
+  Jump to [Standalone appliance](#standalone-appliance-zero-touchd-standalone-ds-free).
+
 `zero-touchd` runs on the device and turns authenticated SMS into gNMI `Get`/`Set`
 against the **device-local** gNMI server, plus the classic smsctl command set.
 It is inert until `zerotouch.enabled=true`. See [DESIGN.md](DESIGN.md) for the
@@ -282,6 +292,109 @@ ds-cli get zerotouch.state                  # → listening
 `zero-touchd` is a loopback gNMI **client** — `zerotouch.gnmi.port` must match
 the port the on-device gNMI server listens on (`127.0.0.1`). Classic SMS commands
 work even if that server is down.
+
+## Standalone appliance — `zero-touchd-standalone` (ds-free)
+
+A single self-contained daemon for a device that runs **only a gNMI server** —
+no ds-server, no cellular-client, no iot stack. It opens the modem directly
+(AT), reads config + users from files, and provisions the device-local gNMI
+server over authenticated SMS. Inert until `enabled = true`.
+
+Differences from the integrated daemon:
+
+| | integrated `zero-touchd` | standalone `zero-touchd-standalone` |
+|---|---|---|
+| SMS | via cellular-client + ds | **direct AT modem** (`/dev/ttyUSB*`) |
+| config / users | `zerotouch.*` / `auth.users.*` ds keys | **`/etc/zerotouch/zerotouch.conf` + `/etc/zerotouch/users`** |
+| classic cmds | ds → other iot daemons | direct: `APN`→`AT+CGDCONT`, `RADIO`→`AT+CFUN`, `STATUS`→`AT+CREG/CSQ`, `REBOOT`→syscall |
+| `WIFI` / `FACTORY-RESET` | supported | **rejected** ("not supported on this device") |
+| deps | ds-server, cellular-client | just the modem + the local gNMI server |
+
+### Prerequisites
+
+- A cellular modem exposing an **AT channel** at `/dev/ttyUSB*` (or `ttyS*`), and
+  the daemon in group `dialout` to open it.
+- The **device-local gNMI server** on `127.0.0.1:<gnmi.port>`.
+- `CAP_SYS_BOOT` if you want `IOT REBOOT` (the unit grants it).
+
+### Build
+
+```sh
+# native (writable dev host / staging), or cross with build.sh + -DZT_BUILD_STANDALONE=ON
+cmake -S . -B build -DZT_BUILD_STANDALONE=ON && cmake --build build
+
+# aarch64 image artifact (only this daemon, no ds-server):
+docker run --privileged --rm tonistiigi/binfmt --install arm64          # one-off
+docker buildx build -f Dockerfile.standalone --platform linux/arm64 \
+  --target export --output type=local,dest=. .
+# → ./zero-touchd-standalone-aarch64.tar.gz  (tree rooted at the device fs)
+```
+
+Install lays down: `/usr/bin/zero-touchd-standalone`,
+`/etc/zerotouch/{zerotouch.conf,users}`,
+`/lib/systemd/system/zero-touchd-standalone.service`, and (with
+`-DZT_INSTALL_SYSV=ON`) `/etc/init.d/zero-touchd-standalone`.
+
+### Configure (files, not ds)
+
+`/etc/zerotouch/zerotouch.conf` (`key = value`):
+
+```ini
+enabled         = true
+gnmi.port       = 50051            # match the on-device gNMI server
+allowed.numbers = +919096383701    # CSV of E.164 senders; empty = any may login
+modem.dev       = /dev/ttyUSB2
+modem.baud      = 115200
+```
+
+`/etc/zerotouch/users` — one `id:sha256:access` per line (Admin required for
+mutating commands):
+
+```sh
+printf '%s' 'your-password' | sha256sum      # → hash for the line below
+# admin:<hash>:Admin
+```
+
+> Both files hold secrets/policy — ship real values, and **change the demo
+> `admin`/`changeme` line**. On a read-only rootfs they are baked into the image
+> (see the read-only runbook above); the same "no runtime `update-rc.d`" rule
+> applies to the SysV init script.
+
+### Enable & start
+
+```sh
+# systemd
+systemctl enable --now zero-touchd-standalone.service
+systemctl status zero-touchd-standalone.service
+# SysV
+/etc/init.d/zero-touchd-standalone start
+```
+
+Then text from an allowlisted phone to the modem's SIM number:
+
+```
+IOT LOGIN admin your-password
+IOT GNMI GET /system/config/hostname
+IOT GNMI SET /system/config/hostname router-7
+IOT APN internet          # → AT+CGDCONT + radio cycle
+IOT STATUS                # → reg/signal/ip from AT+CREG/CSQ/CGPADDR
+IOT REBOOT
+```
+
+### First-boot validation
+
+`AtModem` is the one piece not exercised by the host tests — validate on real
+hardware:
+
+```sh
+journalctl -u zero-touchd-standalone -f     # "modem up on /dev/ttyUSB2 @ 115200"
+# send `IOT LOGIN …` then `IOT STATUS`; confirm a reply SMS comes back
+```
+
+If SMS never arrives or send fails, check the **AT port** (many modems expose
+several `ttyUSB*` — only one is the AT channel) and the modem's PDU-mode support
+(`AT+CMGF=0`, `AT+CMGL=4`). Everything above the serial layer is already covered
+by `zerotouch-sim` + the mock-modem tests.
 
 ## Test the command grammar offline first
 
