@@ -1,6 +1,6 @@
 # zero-touch — SMS-driven gNMI provisioning bridge
 
-`zero-touchd` lets an operator configure and query a field device entirely over
+zero-touch lets an operator configure and query a field device entirely over
 SMS. An inbound `IOT GNMI GET/SET …` message is authenticated, translated into a
 gNMI `Get`/`Set` RPC against the **device-local** gNMI server, and the result is
 returned as a reply SMS to the original sender.
@@ -9,11 +9,26 @@ It is an *integrator*: it reuses the `smsctl` command engine from the **iot**
 repo and the `gnmi_client`/`gnmi_util` from the **grace-server** repo, both
 pulled in as git submodules and **never modified**.
 
+## Two deployment shapes, one set of seams
+
+The same command engine and interface seams drive two daemons — pick per device:
+
+- **`zero-touchd` (integrated)** — rides an existing iot stack: SMS via
+  cellular-client, config/users/telemetry via ds-server. Sections up to
+  [Standalone appliance](#standalone-appliance-ds-free) describe this.
+- **`zero-touchd-standalone` (ds-free)** — one self-contained daemon: opens the
+  modem directly (AT) and reads config/users from files. No ds-server, no
+  cellular-client. See [Standalone appliance](#standalone-appliance-ds-free).
+
+Both select their backends behind the **same three seams** — `ISmsTransport`
+(SMS), `GnmiSink` (gNMI), and `IModem` (the AT modem, standalone only) — so the
+API stays fixed while the concrete model varies.
+
 ## Goals
 
-- One stable command surface (`ISmsTransport`, `GnmiSink`) while the concrete
-  model behind each — the modem, the gNMI backend — can change. Interface
-  design pattern, maximum reuse.
+- Stable command surfaces (`ISmsTransport`, `GnmiSink`, `IModem`) while the
+  concrete model behind each — the modem, the gNMI backend — can change.
+  Interface design pattern, maximum reuse.
 - Add a `gnmi` command **without editing** iot's `smsctl` parser.
 - Unified authentication: a single `IOT LOGIN` authorises both the classic
   smsctl commands and the new gnmi commands (one shared `SessionStore`).
@@ -102,6 +117,69 @@ struct GnmiSink {
   denylist** so a GET cannot exfiltrate credentials over plaintext SMS even when
   Admin-gated.
 - **MockGnmiSink** for host tests.
+
+### IModem — the AT-modem seam (standalone only)
+
+The standalone appliance owns the modem's AT channel directly. One `IModem`
+serves both the SMS transport and the classic-command backend, so a single
+serial port is shared without contention.
+
+```cpp
+struct AtResult { bool ok; std::vector<std::string> lines; /* line_with(prefix) */ };
+struct IModem {
+  virtual AtResult at(const std::string& cmd) = 0;                    // command
+  virtual bool     send_sms(const std::string& to, const std::string& text) = 0;
+  virtual void     on_sms(std::function<void(const InboundSms&)>) = 0;// inbound
+  virtual void     start() = 0;                                       // open + poll
+};
+```
+
+- **AtModem** — generic 3GPP (27.005/27.007) driver: POSIX serial + a synchronous
+  AT engine + an ACE timer that polls SIM/ME storage (`AT+CMGL`, PDU mode). PDU
+  codec + reassembly are **reused verbatim** from iot `wan/cellular`
+  (`encode_sms_submit`/`decode_sms_deliver`/`SmsReassembler`); the init/send flow
+  mirrors the tested WP7702 cellular-client (startup ESC, `CMGF=0`,
+  `CNMI=2,1,0,0,0`, no `CPMS`). Vendor-aware: forced by config or auto-detected
+  via `AT+GMI`/`AT+CGMM` → the reused `cellular::parse_vendor`.
+- **`make_modem(AppConfig)`** — the config-driven factory (the wiring point +
+  the seam where a future non-AT transport, e.g. cloud SMS/SMPP, would branch).
+  `modem.type = auto | sierra | quectel | ublox | generic` (WP7702 = Sierra).
+- **MockModem** for host tests (scripts AT responses; drives everything above the
+  serial layer).
+
+## Standalone appliance (ds-free)
+
+`zero-touchd-standalone` runs the same engine with different backends behind the
+seams — no ds-server, no cellular-client:
+
+```
+   AT modem ◀──▶ IModem (one AT channel) ◀── make_modem(config)
+                    ▲                 ▲
+          AtModemTransport      DirectActionSink (DsSink)
+                    │                 │
+                    └──── Bridge ─────┴── smsctl::Executor  (classic cmds)
+                           │  tokenize/parse/session (reused)
+                      GnmiExecutor ──▶ LocalGnmiSink ──▶ 127.0.0.1 gNMI
+   config file (enabled, gnmi.port, allowed, modem.dev/baud/type)
+   users file  (id:sha256:access)     ← replaces auth.users.*
+```
+
+What swaps, all behind the existing seams:
+
+| Concern | integrated | standalone |
+|---|---|---|
+| SMS transport | `DsSmsTransport` (ds `sms.*`) | **`AtModemTransport`** over `IModem` |
+| classic backend | `LiveSink` → ds → iot daemons | **`DirectActionSink`** → AT / syscalls |
+| config | `zerotouch.*` ds keys | **config file** (`parse_config`) |
+| users | `auth.users.*` ds keys | **users file** (`UserStore`) |
+| gNMI / auth / sessions | `LocalGnmiSink`, `SessionStore` | **unchanged** |
+
+- **`DirectActionSink : smsctl::DsSink`** — lets `smsctl::Executor` be reused
+  verbatim while the classic commands act directly:
+  `APN`→`AT+CGDCONT`, `cell.reset`→`AT+CFUN` cycle, `STATUS`→`AT+CREG/CSQ/CGPADDR`,
+  reboot→syscall. `WIFI`/`FACTORY-RESET` are rejected at the daemon (no iot
+  daemon backs them).
+- **Config/users are files**, not ds; **sessions/nonces stay in-memory**.
 
 ## Command grammar (zero-touch layer)
 

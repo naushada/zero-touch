@@ -392,14 +392,20 @@ IOT REBOOT
 hardware:
 
 ```sh
-journalctl -u zero-touchd-standalone -f     # "modem up on /dev/ttyUSB2 @ 115200"
+journalctl -u zero-touchd-standalone -f
+#   modem up on /dev/ttyUSB2 @ 115200 (Sierra, auto), poll 5s
+#                                       ^^^^^^ ^^^^ vendor auto-detected via AT+GMI/CGMM
 # send `IOT LOGIN …` then `IOT STATUS`; confirm a reply SMS comes back
 ```
 
-If SMS never arrives or send fails, check the **AT port** (many modems expose
-several `ttyUSB*` — only one is the AT channel) and the modem's PDU-mode support
-(`AT+CMGF=0`, `AT+CMGL=4`). Everything above the serial layer is already covered
-by `zerotouch-sim` + the mock-modem tests.
+The `(Sierra, auto)` confirms `modem.type = auto` classified the WP7702 correctly
+(`parse_vendor`). If it reads `Generic` or the wrong family, pin it — e.g.
+`modem.type = sierra`. If SMS never arrives or send fails, check the **AT port**
+(many modems expose several `ttyUSB*` — only one is the AT channel) and the
+modem's PDU-mode support (`AT+CMGF=0`, `AT+CMGL=4`). The init sequence (ESC →
+`CMGF=0` → `CNMI=2,1,0,0,0`, no `CPMS`) mirrors the tested WP7702 cellular-client.
+Everything above the serial layer is covered by `zerotouch-sim` + the mock-modem
+tests.
 
 ## Test the command grammar offline first
 

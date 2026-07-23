@@ -7,25 +7,38 @@ IOT GNMI GET /system/config/hostname
 IOT GNMI SET /system/config/hostname router-7,/interfaces/interface[name=eth0]/config/enabled true
 ```
 
-and `zero-touchd` authenticates the sender, runs the corresponding gNMI
-`Get`/`Set` against the **device-local** gNMI server, and replies over SMS.
+the daemon authenticates the sender, runs the corresponding gNMI `Get`/`Set`
+against the **device-local** gNMI server, and replies over SMS.
 
 It is an integrator: it reuses the `smsctl` engine (from **iot**) and the
 `gnmi_client` (from **grace-server**) as git submodules, both unmodified.
 
+## Two deployment shapes, one set of seams
+
+- **`zero-touchd` (integrated)** — rides an existing iot stack: SMS via
+  cellular-client, config/users/telemetry via ds-server.
+- **`zero-touchd-standalone` (ds-free)** — one self-contained daemon: opens the
+  modem directly (AT) and reads config/users from files. No ds-server, no
+  cellular-client — for a device that runs only a gNMI server.
+
+Both select their backends behind the same three seams — `ISmsTransport` (SMS),
+`GnmiSink` (gNMI), `IModem` (the AT modem, standalone) — so the API stays fixed
+while the model varies. `modem.type` selects the vendor (`auto` detects it;
+WP7702 = Sierra).
+
 See [DESIGN.md](DESIGN.md) for the architecture and [DEPLOY.md](DEPLOY.md) for
-deploying `zero-touchd` on a device.
+deploying either daemon on a device.
 
 ## Layout
 
 ```
-inc/zerotouch/   ISmsTransport, GnmiSink, gnmi_command   (the two interface seams)
-src/             gnmi command layer + transport/sink impls
-daemon/          zero-touchd
+inc/zerotouch/   ISmsTransport, GnmiSink, IModem + command layer   (the seams)
+src/             gnmi command layer + transport/sink/modem impls
+daemon/          zero-touchd (integrated) + zero-touchd-standalone
 sim/             zerotouch-sim — offline SMS simulator (no modem/ds/gRPC)
-test/            host tests (mocks: no modem, no gRPC)
-schemas/         zerotouch.lua — ds key schema + defaults
-packaging/       systemd unit + SysV init script + env file
+test/            host tests (mocks: no modem, no ds, no gRPC)
+schemas/         zerotouch.lua — ds key schema (integrated)
+packaging/       systemd units + SysV init + env / config / users files
 third_party/     iot, grace-server (submodules)
 ```
 
@@ -76,7 +89,14 @@ cmake -S . -B build -DZT_BUILD_GNMI=ON
 cmake -S . -B build -DZT_BUILD_DS=ON
 ```
 
-`-DZT_BUILD_DAEMON=ON` implies both `ZT_BUILD_GNMI` and `ZT_BUILD_DS`.
+`-DZT_BUILD_DAEMON=ON` implies both `ZT_BUILD_GNMI` and `ZT_BUILD_DS`. The
+**standalone** appliance (`zero-touchd-standalone`, ds-free — `AtModem` +
+config/users files) builds with `-DZT_BUILD_STANDALONE=ON` (implies gNMI, needs
+ACE; no ds):
+
+```sh
+cmake -S . -B build -DZT_BUILD_STANDALONE=ON
+```
 
 To cross-compile the daemon for an **aarch64 (ARMv8-A)** device, use `build.sh`
 with a Yocto SDK or a cross toolchain + sysroot. The device rootfs is read-only,
@@ -88,6 +108,10 @@ so production installs bake the daemon into the image via a Yocto recipe
 ./build.sh --sdk /opt/poky/<ver>/environment-setup-cortexa53-crypto-poky-linux
 ```
 
+Add `--standalone` for the ds-free appliance
+(`./build.sh --standalone --sdk …` → `zero-touchd-standalone-aarch64.tar.gz`).
+
 No cross toolchain handy? `./docker-build.sh` builds the aarch64 SysV deploy
 tarball in a container (native arm64 via QEMU) and drops
-`zero-touchd-aarch64-sysv.tar.gz` in the current directory.
+`zero-touchd-aarch64-sysv.tar.gz` in the current directory. The standalone image
+has its own `Dockerfile.standalone`.
