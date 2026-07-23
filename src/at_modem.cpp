@@ -162,7 +162,11 @@ bool AtModem::send_sms(const std::string& to, const std::string& text) {
     int tpdu_len = 0;
     if (!cellular::encode_sms_submit(to, text, pdu, tpdu_len)) return false;
 
-    // AT+CMGS=<tpdu_len> → ">" prompt → <pdu><Ctrl-Z>.
+    // Clear a stuck '>' from a previous aborted send, then ensure PDU mode —
+    // both mirror the tested cellular-client send path.
+    write_all("\x1b");
+    run_at("AT+CMGF=0", 1000);
+    // AT+CMGS=<tpdu_len> → bare ">" prompt (no CR) → <pdu><Ctrl-Z>.
     if (!run_at("AT+CMGS=" + std::to_string(tpdu_len), 5000, /*want_prompt=*/true).ok)
         return false;
     const std::string payload = pdu + "\x1A";   // Ctrl-Z submits
@@ -184,10 +188,15 @@ void AtModem::resolve_vendor() {
 }
 
 void AtModem::configure() {
+    // Clear a '>' prompt left by a prior run that died mid-CMGS — otherwise the
+    // modem eats the next command as message text. ESC (0x1B, a bare byte with
+    // no CR) cancels it. Matches the tested cellular-client startup.
+    write_all("\x1b");
     run_at("ATE0", 1000);              // no echo
     run_at("AT+CMEE=1", 1000);         // numeric error codes
     run_at("AT+CMGF=0", 1000);         // PDU mode
-    run_at("AT+CNMI=0,0,0,0,0", 1000); // no URCs — we poll storage (drain_sms)
+    run_at("AT+CNMI=2,1,0,0,0", 1000); // WP7702-proven URC routing; we still poll
+                                       // via drain_sms and ignore the +CMTI URC.
     // Deliberately NO AT+CPMS: the WP7702 (Sierra) only offers the "SM" store
     // and forcing "ME" misdirects CMGR; the modem default keeps the receive /
     // read stores aligned. Matches the tested cellular-client behaviour.
