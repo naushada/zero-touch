@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 #
-# build.sh — cross-build zero-touchd (+ the SysV init script and packaging) for
-# an ARMv8-A / aarch64 device, and stage a deployable tarball.
+# build.sh — cross-build a zero-touch daemon (+ SysV init and packaging) for an
+# ARMv8-A / aarch64 device, and stage a deployable tarball.
 #
-# The daemon links the device's ACE, protobuf, libevent, libevent_openssl,
-# nghttp2, lua and openssl. Those come from EITHER a Yocto SDK sysroot
-# (recommended) or a plain aarch64 cross toolchain + sysroot you point us at.
+# Two profiles (both link the device's ACE, protobuf, libevent, libevent_openssl,
+# nghttp2, lua and openssl from the sysroot):
+#   integrated (default) — zero-touchd, rides ds-server + cellular-client.
+#   standalone (--standalone) — zero-touchd-standalone, ds-free single daemon
+#                               (direct modem + config/users files).
+# The sysroot comes from EITHER a Yocto SDK (recommended) or a plain aarch64
+# cross toolchain + sysroot you point us at.
 #
 # Usage:
 #   # Yocto SDK (recommended — deps + toolchain all from the SDK):
@@ -14,27 +18,33 @@
 #   # Plain cross toolchain + a target sysroot:
 #   ./build.sh --sysroot /path/to/aarch64-sysroot [--prefix aarch64-linux-gnu-]
 #
+#   # Standalone appliance (add to either of the above):
+#   ./build.sh --standalone --sdk /opt/poky/<ver>/environment-setup-…
+#
 # Options:
+#   --standalone           Build zero-touchd-standalone (ds-free) instead of the
+#                          integrated zero-touchd.
 #   --sdk <env-script>     Yocto SDK environment-setup script to source.
 #   --sysroot <dir>        Target sysroot (plain-toolchain path).
 #   --prefix <tuple->      Cross-compiler prefix (default aarch64-linux-gnu-).
 #   --ace-root <dir>       ACE_ROOT in the sysroot (default: <sysroot>/usr).
-#   --build-dir <dir>      CMake build dir (default build-aarch64).
-#   --dest <dir>           Install staging dir (default dist/aarch64).
+#   --build-dir <dir>      CMake build dir (default build-aarch64[-standalone]).
+#   --dest <dir>           Install staging dir (default dist/aarch64[-standalone]).
 #   --jobs <n>             Parallel build jobs (default: nproc).
 #   -h | --help            This help.
 #
-# Output: $DEST is a install tree rooted at the device's filesystem, plus
-#         zero-touchd-aarch64.tar.gz next to it. See "Deploy" in DEPLOY.md.
+# Output: $DEST is an install tree rooted at the device filesystem, plus the
+#         profile's tarball next to it. See DEPLOY.md.
 
 set -euo pipefail
 
+STANDALONE=0
 SDK_ENV=""
 SYSROOT=""
 PREFIX="aarch64-linux-gnu-"
 ACE_ROOT=""
-BUILD_DIR="build-aarch64"
-DEST="dist/aarch64"
+BUILD_DIR=""
+DEST=""
 JOBS="$( (command -v nproc >/dev/null && nproc) || echo 4)"
 PREFIX_INSTALL="/usr/local"          # CMAKE_INSTALL_PREFIX on the device
 
@@ -42,6 +52,7 @@ die() { echo "build.sh: $*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --standalone) STANDALONE=1; shift ;;
         --sdk)       SDK_ENV="$2"; shift 2 ;;
         --sysroot)   SYSROOT="$2"; shift 2 ;;
         --prefix)    PREFIX="$2"; shift 2 ;;
@@ -49,10 +60,25 @@ while [ $# -gt 0 ]; do
         --build-dir) BUILD_DIR="$2"; shift 2 ;;
         --dest)      DEST="$2"; shift 2 ;;
         --jobs)      JOBS="$2"; shift 2 ;;
-        -h|--help)   sed -n '2,40p' "$0"; exit 0 ;;
+        -h|--help)   sed -n '2,42p' "$0"; exit 0 ;;
         *)           die "unknown option '$1' (see --help)" ;;
     esac
 done
+
+# ── profile-derived names ────────────────────────────────────────────────────
+if [ "$STANDALONE" = 1 ]; then
+    ZT_TARGET_FLAG="-DZT_BUILD_STANDALONE=ON"   # implies ZT_BUILD_GNMI, not DS
+    BIN_NAME="zero-touchd-standalone"
+    TARBALL="zero-touchd-standalone-aarch64.tar.gz"
+    : "${BUILD_DIR:=build-aarch64-standalone}"
+    : "${DEST:=dist/aarch64-standalone}"
+else
+    ZT_TARGET_FLAG="-DZT_BUILD_DAEMON=ON"        # implies ZT_BUILD_GNMI + DS
+    BIN_NAME="zero-touchd"
+    TARBALL="zero-touchd-aarch64.tar.gz"
+    : "${BUILD_DIR:=build-aarch64}"
+    : "${DEST:=dist/aarch64}"
+fi
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO"
@@ -65,8 +91,8 @@ fi
 
 CMAKE_ARGS=(
     -DCMAKE_BUILD_TYPE=Release
-    -DZT_BUILD_DAEMON=ON        # implies ZT_BUILD_GNMI + ZT_BUILD_DS
-    -DZT_INSTALL_SYSV=ON        # install /etc/init.d/zero-touchd too
+    "${ZT_TARGET_FLAG}"         # -DZT_BUILD_DAEMON=ON | -DZT_BUILD_STANDALONE=ON
+    -DZT_INSTALL_SYSV=ON        # install the SysV init script too
     -DZT_BUILD_TESTS=OFF
     -DZT_BUILD_SIM=OFF
     -DZT_SYSTEMD_DIR=/lib/systemd/system
@@ -117,7 +143,7 @@ echo "==> staging install → $DEST"
 rm -rf "$DEST"
 DESTDIR="${REPO}/${DEST}" cmake --install "$BUILD_DIR"
 
-BIN="${DEST}${PREFIX_INSTALL}/bin/zero-touchd"
+BIN="${DEST}${PREFIX_INSTALL}/bin/${BIN_NAME}"
 if command -v file >/dev/null 2>&1 && [ -f "$BIN" ]; then
     echo "==> arch check: $(file -b "$BIN")"
     case "$(file -b "$BIN")" in
@@ -126,7 +152,6 @@ if command -v file >/dev/null 2>&1 && [ -f "$BIN" ]; then
     esac
 fi
 
-TARBALL="zero-touchd-aarch64.tar.gz"
 echo "==> packaging → $TARBALL"
 tar czf "$TARBALL" -C "$DEST" .
 
