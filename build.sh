@@ -21,12 +21,12 @@
 #   # Standalone appliance (add to either of the above):
 #   ./build.sh --standalone --sdk /opt/poky/<ver>/environment-setup-…
 #
-#   # Offline SMS simulator — NATIVE host build, no sysroot/SDK (or use ./sim.sh):
+#   # Offline SMS simulator — builds a Docker image (run it with ./sim.sh):
 #   ./build.sh --sim
 #
 # Options:
-#   --sim                  Build zerotouch-sim natively on this host (no cross
-#                          toolchain, no sysroot); ignores the SDK/sysroot flags.
+#   --sim                  Build the zerotouch-sim Docker image (host arch, no
+#                          cross toolchain / sysroot); run it with ./sim.sh.
 #   --standalone           Build zero-touchd-standalone (ds-free) instead of the
 #                          integrated zero-touchd.
 #   --sdk <env-script>     Yocto SDK environment-setup script to source.
@@ -96,16 +96,20 @@ if [ ! -f third_party/iot/apps/3rdparty/json/single_include/nlohmann/json.hpp ];
     git submodule update --init --recursive
 fi
 
-# ── offline simulator: a NATIVE host build, no cross toolchain / sysroot ──────
+# ── offline simulator: build a Docker image (host arch, no cross / sysroot) ───
+# The sim needs only the smsctl engine + zerotouch core (no ACE/protobuf/gRPC),
+# so Dockerfile.sim is a plain host-arch build. Run it with ./sim.sh.
 if [ "$SIM" = 1 ]; then
-    # native host build dir (override only if the user set an explicit --build-dir)
-    B="${BUILD_DIR}"; case "$B" in build-aarch64|build-aarch64-standalone|"") B="build";; esac
-    echo "==> building zerotouch-sim (native host) in $B/…"
-    cmake -S . -B "$B" -DZT_BUILD_TESTS=OFF -DZT_BUILD_SIM=ON
-    cmake --build "$B" --target zerotouch-sim -j "$JOBS"
+    if ! command -v docker >/dev/null 2>&1; then
+        die "docker not found (--sim builds an image; for a native build instead:
+       cmake -S . -B build -DZT_BUILD_SIM=ON && cmake --build build --target zerotouch-sim)"
+    fi
+    IMG="zerotouch-sim:local"
+    echo "==> building the simulator image ($IMG)…"
+    docker build -f Dockerfile.sim -t "$IMG" .
     echo
-    echo "Done: $B/zerotouch-sim"
-    echo "Run:  ./sim.sh          (or  $B/zerotouch-sim)"
+    echo "Done: image $IMG"
+    echo "Run:  ./sim.sh"
     exit 0
 fi
 

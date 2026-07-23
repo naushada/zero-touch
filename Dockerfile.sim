@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+#
+# zerotouch-sim in a container — the offline SMS simulator that bypasses the SMS
+# transport (each typed line lands straight at Bridge::on_sms; no modem /
+# ds-server / gRPC, in-memory gNMI). Built for the HOST arch — it needs only the
+# smsctl engine + zerotouch core (no ACE/protobuf), so this is a plain native
+# build, not the aarch64 cross image.
+#
+#   ./build.sh --sim     # builds this image  (zerotouch-sim:local)
+#   ./sim.sh             # runs it interactively — SIM banner + REPL
+
+FROM debian:bookworm-slim
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git ca-certificates libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+# Context must contain the submodule working trees (build.sh --sim runs a
+# recursive submodule init first; see .dockerignore).
+COPY . .
+
+RUN cmake -S . -B build -DZT_BUILD_TESTS=OFF -DZT_BUILD_SIM=ON \
+    && cmake --build build --target zerotouch-sim -j"$(nproc)" \
+    && install -m 0755 build/zerotouch-sim /usr/local/bin/zerotouch-sim \
+    && install -m 0755 packaging/sim/entrypoint.sh /usr/local/bin/zt-sim-entrypoint
+
+# Banner on entry, then run CMD (the sim) — or an overriding arg (e.g. `sh`).
+ENTRYPOINT ["/usr/local/bin/zt-sim-entrypoint"]
+CMD ["zerotouch-sim"]
