@@ -133,7 +133,7 @@ void help() {
         "  /tree               dump the in-memory gNMI store\n"
         "  /users              list the demo users\n"
         "  /help               this help\n"
-        "  /quit | /exit       leave\n"
+        "  /quit | /exit | quit | exit | q    leave\n"
         "examples:\n"
         "  IOT LOGIN admin admin\n"
         "  IOT GNMI GET /system/config/hostname\n"
@@ -201,6 +201,8 @@ int main() {
     std::string line;
     std::cout << "> " << std::flush;
     while (std::getline(std::cin, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();  // tolerate CRLF
+        if (line == "quit" || line == "exit" || line == "q") break; // bare quit
         if (!line.empty() && line[0] == '/') {
             std::istringstream ss(line);
             std::string cmd; ss >> cmd;
