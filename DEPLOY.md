@@ -144,6 +144,46 @@ The tarball is rooted at the device filesystem (`usr/bin/zero-touchd`,
 copied onto a running read-only device — extract it into your image rootfs, or
 into `/run` for a tmpfs smoke test (below).
 
+### Where do I get the sysroot? (`--sysroot` / `--sdk`)
+
+The **SysV init script itself needs no sysroot** — it's a shell script the recipe
+installs. The sysroot is only for cross-compiling the **binary**, which links the
+device's ACE, protobuf, libevent, nghttp2, lua and openssl. Three ways, best-first
+for a Yocto device:
+
+1. **Don't get one — build via the Yocto recipe.** For the read-only Yocto
+   device this is the production path (see *Production — bake into the image*
+   above): bitbake resolves every dep and bakes the binary + SysV rc.d links into
+   the image. No sysroot, no `build.sh`.
+
+2. **Generate a Yocto SDK** (the sysroot + toolchain, for `build.sh --sdk`):
+
+   ```sh
+   kas build yocto/kas-iot.yml --target iot-image -c populate_sdk
+   #   → tmp/deploy/sdk/poky-glibc-x86_64-…-cortexa53-…-toolchain-*.sh
+   ./poky-glibc-...-toolchain-*.sh                 # installs to e.g. /opt/poky/<ver>
+   ./build.sh --sdk /opt/poky/<ver>/environment-setup-cortexa53-…   # + --standalone
+   ```
+
+   **Gotcha:** the SDK sysroot only holds what your *image* pulls in. `iot-image`
+   has ACE but likely **not** the gNMI deps (protobuf/libevent/nghttp2/lua are
+   grace-server's). Add them before `populate_sdk`:
+
+   ```bitbake
+   # local.conf — names per your recipes
+   TOOLCHAIN_TARGET_TASK:append = " ace-tao-dev protobuf-dev libevent-dev libnghttp2-dev lua-dev openssl-dev zlib-dev"
+   ```
+
+3. **No sysroot at all — build in a container** (`docker-build.sh` /
+   `Dockerfile.standalone`, native arm64 via QEMU + Debian packages; above).
+   Easiest for a quick artifact, but the deps are Debian's versions (ACE 6.5.x),
+   not your device's exact builds — fine for the self-contained appliance, less
+   exact for the integrated daemon on the real device.
+
+> **Don't** rsync/tar the device rootfs as a sysroot on its own — a shipped image
+> has runtime libs but no `-dev` headers, so it won't compile. Use the SDK (which
+> includes the headers) or the recipe.
+
 ### Quick test on a running device — run from `/run` (no reflash)
 
 `/run` is writable tmpfs, so you can drop the binary there and run it directly —
