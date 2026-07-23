@@ -15,6 +15,27 @@ against the **device-local** gNMI server, plus the classic smsctl command set.
 It is inert until `zerotouch.enabled=true`. See [DESIGN.md](DESIGN.md) for the
 architecture.
 
+### How many daemons get installed?
+
+A zero-touch build installs **exactly one** daemon + one init script — never
+both variants — and which one depends on the profile:
+
+| Profile | Init script | Binary |
+|---|---|---|
+| integrated (`ZT_BUILD_DAEMON`) | `/etc/init.d/zero-touchd` | `/usr/bin/zero-touchd` |
+| standalone (`ZT_BUILD_STANDALONE`) | `/etc/init.d/zero-touchd-standalone` | `/usr/bin/zero-touchd-standalone` |
+
+What differs is what *else* must already be running:
+
+- **Integrated** — one zero-touch init script, but it is a **client** of daemons
+  it does **not** install: `iot-ds` (ds-server), `cellular-client`, and the
+  on-device gNMI server. Those come from the **iot image** as their own init
+  scripts and must already be present. The running system has several daemons;
+  the zero-touch artifact contributes one.
+- **Standalone** — one init script, genuinely **self-contained** (no ds-server,
+  no cellular-client). The only other thing it needs is the gNMI server the
+  device already runs — also not a zero-touch daemon.
+
 ## Prerequisites on the device
 
 - **ds-server** (`iot-ds.service`) — the daemon's entire control/telemetry surface.
