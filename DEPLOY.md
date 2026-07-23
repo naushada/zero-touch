@@ -320,10 +320,14 @@ Differences from the integrated daemon:
 ### Build
 
 ```sh
-# native (writable dev host / staging), or cross with build.sh + -DZT_BUILD_STANDALONE=ON
+# native (writable dev host / staging):
 cmake -S . -B build -DZT_BUILD_STANDALONE=ON && cmake --build build
 
-# aarch64 image artifact (only this daemon, no ds-server):
+# aarch64 cross-build + staged tarball (Yocto SDK or cross toolchain):
+./build.sh --standalone --sdk /opt/poky/<ver>/environment-setup-…
+# → ./zero-touchd-standalone-aarch64.tar.gz
+
+# aarch64 image artifact via container (only this daemon, no ds-server):
 docker run --privileged --rm tonistiigi/binfmt --install arm64          # one-off
 docker buildx build -f Dockerfile.standalone --platform linux/arm64 \
   --target export --output type=local,dest=. .
