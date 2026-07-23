@@ -44,14 +44,18 @@ third_party/     iot, grace-server (submodules)
 
 ## Try it offline — `zerotouch-sim`
 
-`zerotouch-sim` runs the **real** command path (smsctl parser/session/executor +
-the zerotouch bridge/gnmi layer) against in-memory ds and gNMI stores, so you can
-drive the whole `IOT …` SMS conversation from a keyboard — no modem, no
-ds-server, no gRPC. It builds by default (needs the `smsctl` engine, so
-`git submodule update --init --recursive` first).
+`zerotouch-sim` **bypasses the SMS transport**: it wires the **real** `Bridge`
+(smsctl parser/session/executor + the zerotouch gnmi layer) behind an in-process
+console transport, so each line you type lands straight at `Bridge::on_sms` — no
+modem, no ds-server, no gRPC (the gNMI backend is an in-memory tree).
+
+```sh
+./sim.sh            # builds (native host) if needed, then runs it
+# or: ./build.sh --sim   then   ./build/zerotouch-sim
+```
 
 ```
-$ ./build/zerotouch-sim
+$ ./sim.sh
 > IOT LOGIN admin admin
   ← SMS to +15551230000: OK LOGIN: admin, 10 min
 > IOT GNMI GET /system/config/hostname,/system/aaa/user[name=admin]/config/password

@@ -21,7 +21,12 @@
 #   # Standalone appliance (add to either of the above):
 #   ./build.sh --standalone --sdk /opt/poky/<ver>/environment-setup-…
 #
+#   # Offline SMS simulator — NATIVE host build, no sysroot/SDK (or use ./sim.sh):
+#   ./build.sh --sim
+#
 # Options:
+#   --sim                  Build zerotouch-sim natively on this host (no cross
+#                          toolchain, no sysroot); ignores the SDK/sysroot flags.
 #   --standalone           Build zero-touchd-standalone (ds-free) instead of the
 #                          integrated zero-touchd.
 #   --sdk <env-script>     Yocto SDK environment-setup script to source.
@@ -38,6 +43,7 @@
 
 set -euo pipefail
 
+SIM=0
 STANDALONE=0
 SDK_ENV=""
 SYSROOT=""
@@ -52,6 +58,7 @@ die() { echo "build.sh: $*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --sim)        SIM=1; shift ;;
         --standalone) STANDALONE=1; shift ;;
         --sdk)       SDK_ENV="$2"; shift 2 ;;
         --sysroot)   SYSROOT="$2"; shift 2 ;;
@@ -83,10 +90,23 @@ fi
 REPO="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO"
 
-# The daemon needs iot's nlohmann/json (lookup_account) + smsctl + gnmi_client.
+# The daemon (and the sim's smsctl engine) needs iot's nlohmann/json + smsctl.
 if [ ! -f third_party/iot/apps/3rdparty/json/single_include/nlohmann/json.hpp ]; then
     echo "==> initialising submodules (recursive)…"
     git submodule update --init --recursive
+fi
+
+# ── offline simulator: a NATIVE host build, no cross toolchain / sysroot ──────
+if [ "$SIM" = 1 ]; then
+    # native host build dir (override only if the user set an explicit --build-dir)
+    B="${BUILD_DIR}"; case "$B" in build-aarch64|build-aarch64-standalone|"") B="build";; esac
+    echo "==> building zerotouch-sim (native host) in $B/…"
+    cmake -S . -B "$B" -DZT_BUILD_TESTS=OFF -DZT_BUILD_SIM=ON
+    cmake --build "$B" --target zerotouch-sim -j "$JOBS"
+    echo
+    echo "Done: $B/zerotouch-sim"
+    echo "Run:  ./sim.sh          (or  $B/zerotouch-sim)"
+    exit 0
 fi
 
 CMAKE_ARGS=(
