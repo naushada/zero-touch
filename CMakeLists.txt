@@ -187,6 +187,7 @@ if(ZT_BUILD_TESTS)
         test/config_test.cpp
         test/users_test.cpp
         test/modem_test.cpp
+        test/at_modem_transport_test.cpp
         test/bridge_test.cpp)
     target_include_directories(zerotouch-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
