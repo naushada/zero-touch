@@ -69,10 +69,18 @@ COPY . .
 # does not depend on FindOpenSSL's find_library search, which mis-fires in this
 # image (finds the headers → "found version 3.0.x" but not OPENSSL_CRYPTO_LIBRARY).
 # The paths are discovered on disk; if either is empty the echo makes it obvious.
+# CMAKE_LIBRARY_ARCHITECTURE is the root fix: this image doesn't set it, so
+# find_library never searched /usr/lib/<triplet> (multiarch) where every lib
+# lives — which is why OpenSSL/Protobuf/Lua "found version" but "missing library".
+# Setting it repairs all find_library calls at once. OpenSSL + Protobuf are also
+# pinned explicitly as belt-and-suspenders.
 RUN set -eux; \
+    ARCH="$(gcc -dumpmachine)"; \
     CRYPTO="$(find /usr/lib /lib -name 'libcrypto.so*' 2>/dev/null | sort | tail -1)"; \
     SSL="$(find /usr/lib /lib -name 'libssl.so*' 2>/dev/null | sort | tail -1)"; \
-    echo "OpenSSL for cmake: crypto=${CRYPTO:-MISSING} ssl=${SSL:-MISSING}"; \
+    PROTOBUF="$(find /usr/lib /lib -name 'libprotobuf.so*' 2>/dev/null | sort | tail -1)"; \
+    PROTOC="$(command -v protoc || echo /usr/bin/protoc)"; \
+    echo "libs: arch=$ARCH crypto=${CRYPTO:-MISSING} protobuf=${PROTOBUF:-MISSING}"; \
     cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DZT_BUILD_DAEMON=ON \
@@ -82,10 +90,14 @@ RUN set -eux; \
         -DZT_SYSTEMD_DIR=/lib/systemd/system \
         -DACE_ROOT=/usr \
         -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_LIBRARY_ARCHITECTURE="$ARCH" \
         -DOPENSSL_ROOT_DIR=/usr \
         -DOPENSSL_INCLUDE_DIR=/usr/include \
         ${CRYPTO:+-DOPENSSL_CRYPTO_LIBRARY="$CRYPTO"} \
         ${SSL:+-DOPENSSL_SSL_LIBRARY="$SSL"} \
+        -DProtobuf_INCLUDE_DIR=/usr/include \
+        -DProtobuf_PROTOC_EXECUTABLE="$PROTOC" \
+        ${PROTOBUF:+-DProtobuf_LIBRARY="$PROTOBUF"} \
     && cmake --build build -j"$(nproc)" \
     && DESTDIR=/out cmake --install build
 
