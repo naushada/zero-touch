@@ -1,0 +1,73 @@
+# syntax=docker/dockerfile:1
+#
+# Build the aarch64 (ARMv8-A) **standalone** appliance artifact: zero-touchd-
+# standalone with NO ds-server and NO cellular-client. One daemon that opens the
+# modem directly and provisions the device-local gNMI server over SMS.
+#
+# Native arm64 build (via QEMU/binfmt); deps from Debian's arm64 packages.
+# Build + export to the host's current directory:
+#   docker run --privileged --rm tonistiigi/binfmt --install arm64   # one-off
+#   docker buildx build -f Dockerfile.standalone --platform linux/arm64 \
+#     --target export --output type=local,dest=. .
+# → ./zero-touchd-standalone-aarch64.tar.gz  (tree rooted at the device fs).
+# Extract into the image rootfs, or into /run for a tmpfs smoke test. See DEPLOY.md.
+
+ARG DEBIAN=debian:bookworm-slim
+ARG ARTIFACT=zero-touchd-standalone-aarch64.tar.gz
+
+FROM ${DEBIAN} AS build
+ARG DEBIAN_FRONTEND=noninteractive
+ARG ARTIFACT
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git ca-certificates file pkg-config \
+        libace-dev \
+        libssl-dev libssl3 \
+        libprotobuf-dev protobuf-compiler \
+        libevent-dev libnghttp2-dev \
+        liblua5.4-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Recreate any missing lib<name>.so dev symlink (fixes -lACE etc. in this slim
+# image); OpenSSL is pinned explicitly at the cmake step.
+RUN set -eux; \
+    for d in /usr/lib "/usr/lib/$(gcc -dumpmachine)"; do \
+        [ -d "$d" ] || continue; \
+        for real in $(find "$d" -maxdepth 1 -name '*.so.*' 2>/dev/null | sort); do \
+            stem="$(basename "$real")"; stem="${stem%%.so.*}"; \
+            [ -e "${d}/${stem}.so" ] || ln -s "$real" "${d}/${stem}.so"; \
+        done; \
+    done; \
+    ldconfig
+
+WORKDIR /src
+COPY . .
+
+# Standalone appliance: ZT_BUILD_STANDALONE (no ds), install prefix /usr.
+RUN set -eux; \
+    CRYPTO="$(find /usr/lib /lib -name 'libcrypto.so*' 2>/dev/null | sort | tail -1)"; \
+    SSL="$(find /usr/lib /lib -name 'libssl.so*' 2>/dev/null | sort | tail -1)"; \
+    echo "OpenSSL for cmake: crypto=${CRYPTO:-MISSING} ssl=${SSL:-MISSING}"; \
+    cmake -S . -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DZT_BUILD_STANDALONE=ON \
+        -DZT_INSTALL_SYSV=ON \
+        -DZT_BUILD_TESTS=OFF \
+        -DZT_BUILD_SIM=OFF \
+        -DZT_SYSTEMD_DIR=/lib/systemd/system \
+        -DACE_ROOT=/usr \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DOPENSSL_ROOT_DIR=/usr \
+        -DOPENSSL_INCLUDE_DIR=/usr/include \
+        ${CRYPTO:+-DOPENSSL_CRYPTO_LIBRARY="$CRYPTO"} \
+        ${SSL:+-DOPENSSL_SSL_LIBRARY="$SSL"} \
+    && cmake --build build -j"$(nproc)" \
+    && DESTDIR=/out cmake --install build \
+    && file /out/usr/bin/zero-touchd-standalone
+
+# Package the rootfs-rooted tree (./usr/bin, ./etc/zerotouch, ./etc/init.d, …).
+RUN tar czf "/${ARTIFACT}" -C /out .
+
+FROM scratch AS export
+ARG ARTIFACT
+COPY --from=build /${ARTIFACT} /

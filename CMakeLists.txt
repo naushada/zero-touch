@@ -9,12 +9,17 @@ option(ZT_BUILD_SIM    "Build zerotouch-sim, the offline SMS simulator"       ON
 option(ZT_BUILD_GNMI   "Build LocalGnmiSink (needs protobuf/libevent/nghttp2)" OFF)
 option(ZT_BUILD_DS     "Build DsSmsTransport (needs ACE + datastore_client)"   OFF)
 option(ZT_BUILD_DAEMON "Build the zero-touchd SMS→gNMI daemon"   OFF)
+option(ZT_BUILD_STANDALONE "Build zero-touchd-standalone (ds-free appliance)" OFF)
 option(ZT_INSTALL_SYSV "Install the SysV init script instead of/alongside systemd" OFF)
 
-# The daemon needs the real gNMI backend and the ds SMS transport.
+# The iot-integrated daemon needs the real gNMI backend and the ds SMS transport.
 if(ZT_BUILD_DAEMON)
     set(ZT_BUILD_GNMI ON)
     set(ZT_BUILD_DS   ON)
+endif()
+# The standalone appliance needs LocalGnmiSink but NOT the ds transport.
+if(ZT_BUILD_STANDALONE)
+    set(ZT_BUILD_GNMI ON)
 endif()
 
 # ── reused engine: smsctl::core from the iot submodule ──────────────────────
@@ -187,6 +192,7 @@ if(ZT_BUILD_TESTS)
         test/config_test.cpp
         test/users_test.cpp
         test/modem_test.cpp
+        test/at_modem_transport_test.cpp
         test/bridge_test.cpp)
     target_include_directories(zerotouch-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
@@ -263,4 +269,49 @@ if(ZT_BUILD_DAEMON)
     # DEPLOY doc referenced by the unit's Documentation= line.
     install(FILES DEPLOY.md
             DESTINATION ${CMAKE_INSTALL_FULL_DATADIR}/doc/zero-touch)
+endif()
+
+# ── zero-touchd-standalone: ds-free gNMI-over-SMS appliance ──────────────────
+# One daemon, no ds-server / cellular-client: AtModem (direct AT) + config/users
+# files + DirectActionSink + LocalGnmiSink. Needs ACE + the gNMI deps (via
+# ZT_BUILD_GNMI, set above) + smsctl::core + the reused wan/cellular PDU codec.
+if(ZT_BUILD_STANDALONE)
+    if(NOT DEFINED ACE_ROOT)
+        set(ACE_ROOT /usr/local/ACE_TAO-7.0.0)
+    endif()
+    set(GS_CELL ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iot/modules/wan/cellular)
+
+    # AtModem + the reused, pure PDU codec / reassembler from wan/cellular.
+    add_library(zerotouch_atmodem STATIC
+        src/at_modem.cpp
+        ${GS_CELL}/src/sms_pdu.cpp
+        ${GS_CELL}/src/sms_receiver.cpp)
+    target_include_directories(zerotouch_atmodem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_include_directories(zerotouch_atmodem PRIVATE ${GS_CELL}/inc ${ACE_ROOT}/include)
+    target_link_directories(zerotouch_atmodem PUBLIC ${ACE_ROOT}/lib)
+    target_link_libraries(zerotouch_atmodem PUBLIC zerotouch_core ACE)
+    target_compile_options(zerotouch_atmodem PRIVATE -Wall -Wextra)
+
+    add_executable(zero-touchd-standalone daemon/zerotouchd_standalone.cpp)
+    target_include_directories(zero-touchd-standalone PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc ${IOT_SMSCTL_DIR}/inc ${ACE_ROOT}/include)
+    target_link_directories(zero-touchd-standalone PRIVATE ${ACE_ROOT}/lib)
+    target_link_libraries(zero-touchd-standalone PRIVATE
+        zerotouch_core zerotouch_standalone zerotouch_gnmi zerotouch_atmodem
+        smsctl_core ACE pthread)
+    target_compile_options(zero-touchd-standalone PRIVATE -Wall -Wextra)
+
+    include(GNUInstallDirs)
+    if(NOT DEFINED ZT_SYSTEMD_DIR)
+        set(ZT_SYSTEMD_DIR /lib/systemd/system)
+    endif()
+    install(TARGETS zero-touchd-standalone RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(FILES packaging/etc-zerotouch/zerotouch.conf packaging/etc-zerotouch/users
+            DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/zerotouch)
+    install(FILES packaging/systemd/zero-touchd-standalone.service
+            DESTINATION ${ZT_SYSTEMD_DIR})
+    if(ZT_INSTALL_SYSV)
+        install(PROGRAMS packaging/sysv/zero-touchd-standalone
+                DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/init.d)
+    endif()
 endif()
