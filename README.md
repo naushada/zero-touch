@@ -49,13 +49,23 @@ third_party/     iot, grace-server (submodules)
 console transport, so each line you type lands straight at `Bridge::on_sms` — no
 modem, no ds-server, no gRPC (the gNMI backend is an in-memory tree).
 
+Run it in its container (a **SIM** banner shows on entry):
+
 ```sh
-./sim.sh            # builds (native host) if needed, then runs it
-# or: ./build.sh --sim   then   ./build/zerotouch-sim
+./sim.sh                    # builds the zerotouch-sim image if needed, then runs it
+./sim.sh --rebuild          # force a fresh image
+./sim.sh sh                 # drop into a shell in the container instead
+# native (no Docker): cmake -S . -B build -DZT_BUILD_SIM=ON && ./build/zerotouch-sim
 ```
 
 ```
 $ ./sim.sh
+   ____ ___ __  __
+  / ___|_ _|  \/  |
+  \___ \| || |\/| |
+   ___) | || |  | |
+  |____/___|_|  |_|
+  zero-touch offline simulator  —  no modem / ds-server / gRPC
 > IOT LOGIN admin admin
   ← SMS to +15551230000: OK LOGIN: admin, 10 min
 > IOT GNMI GET /system/config/hostname,/system/aaa/user[name=admin]/config/password
