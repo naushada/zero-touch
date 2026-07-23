@@ -56,6 +56,27 @@ bool is_error(const std::string& l) {
     return l == "ERROR" || l.rfind("+CME ERROR", 0) == 0 || l.rfind("+CMS ERROR", 0) == 0;
 }
 
+cellular::Vendor forced_vendor(ModemType t) {
+    switch (t) {
+        case ModemType::Sierra:  return cellular::Vendor::Sierra;
+        case ModemType::Quectel: return cellular::Vendor::Quectel;
+        case ModemType::UBlox:   return cellular::Vendor::UBlox;
+        case ModemType::Generic: return cellular::Vendor::Generic;
+        case ModemType::Auto:    return cellular::Vendor::Generic;   // resolved via AT
+    }
+    return cellular::Vendor::Generic;
+}
+
+const char* vendor_name(cellular::Vendor v) {
+    switch (v) {
+        case cellular::Vendor::Sierra:  return "Sierra";
+        case cellular::Vendor::Quectel: return "Quectel";
+        case cellular::Vendor::UBlox:   return "u-blox";
+        case cellular::Vendor::Generic: return "Generic";
+    }
+    return "Generic";
+}
+
 } // namespace
 
 AtModem::~AtModem() {
@@ -149,22 +170,40 @@ bool AtModem::send_sms(const std::string& to, const std::string& text) {
     return run_at("", 60000).ok;   // wait for +CMGS: / OK (send can be slow)
 }
 
+void AtModem::resolve_vendor() {
+    if (m_cfg.type != ModemType::Auto) {
+        m_vendor = forced_vendor(m_cfg.type);
+        return;
+    }
+    // Auto: classify from the manufacturer (AT+GMI) + model (AT+CGMM) lines,
+    // reusing the tested cellular::parse_vendor (WP*→Sierra, BG/EC→Quectel, …).
+    std::string id;
+    for (const auto& l : at("AT+GMI").lines)  id += l + " ";
+    for (const auto& l : at("AT+CGMM").lines) id += l + " ";
+    m_vendor = cellular::parse_vendor(id);
+}
+
 void AtModem::configure() {
     run_at("ATE0", 1000);              // no echo
     run_at("AT+CMEE=1", 1000);         // numeric error codes
     run_at("AT+CMGF=0", 1000);         // PDU mode
-    run_at("AT+CNMI=0,0,0,0,0", 1000); // no URCs — we poll storage
-    run_at("AT+CPMS=\"ME\",\"ME\",\"ME\"", 1000);
+    run_at("AT+CNMI=0,0,0,0,0", 1000); // no URCs — we poll storage (drain_sms)
+    // Deliberately NO AT+CPMS: the WP7702 (Sierra) only offers the "SM" store
+    // and forcing "ME" misdirects CMGR; the modem default keeps the receive /
+    // read stores aligned. Matches the tested cellular-client behaviour.
 }
 
 void AtModem::start() {
     if (!open_port()) return;
+    resolve_vendor();
     configure();
     drain_sms();   // clear anything already stored (also baselines)
     ACE_Reactor::instance()->schedule_timer(
         this, nullptr, ACE_Time_Value(m_cfg.poll_sec), ACE_Time_Value(m_cfg.poll_sec));
-    ACE_DEBUG((LM_INFO, ACE_TEXT("%D [zerotouch] modem up on %C @ %u, poll %us\n"),
-               m_cfg.dev.c_str(), m_cfg.baud, m_cfg.poll_sec));
+    ACE_DEBUG((LM_INFO,
+               ACE_TEXT("%D [zerotouch] modem up on %C @ %u (%C%C), poll %us\n"),
+               m_cfg.dev.c_str(), m_cfg.baud, vendor_name(m_vendor),
+               m_cfg.type == ModemType::Auto ? ", auto" : "", m_cfg.poll_sec));
 }
 
 int AtModem::handle_timeout(const ACE_Time_Value&, const void*) {

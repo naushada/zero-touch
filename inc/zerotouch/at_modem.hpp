@@ -6,8 +6,10 @@
 
 #include <ace/Event_Handler.h>
 
+#include "zerotouch/config.hpp"   // ModemType
 #include "zerotouch/modem.hpp"
 
+#include "at_parser.hpp"      // cellular::Vendor / parse_vendor (reused)
 #include "sms_receiver.hpp"   // cellular::SmsReassembler (reused)
 
 /**
@@ -35,6 +37,7 @@ public:
         std::string   dev      = "/dev/ttyUSB2"; ///< AT channel
         std::uint32_t baud     = 115200;
         std::uint32_t poll_sec = 5;              ///< inbound-SMS poll interval
+        ModemType     type     = ModemType::Auto;///< vendor; Auto → detect at start()
     };
 
     explicit AtModem(Config cfg) : m_cfg(std::move(cfg)) {}
@@ -51,6 +54,7 @@ public:
 
 private:
     bool        open_port();
+    void        resolve_vendor();   ///< force from config, or detect via AT+GMI/CGMM
     void        configure();
     void        drain_sms();
     bool        write_all(const std::string& s);
@@ -60,6 +64,7 @@ private:
 
     Config                    m_cfg;
     int                       m_fd = -1;
+    cellular::Vendor          m_vendor = cellular::Vendor::Generic;
     SmsFn                     m_on_sms;
     cellular::SmsReassembler  m_reasm;
     std::string               m_rx;   ///< partial-line buffer across reads

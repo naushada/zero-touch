@@ -49,3 +49,21 @@ TEST(Config, BoolForms) {
     EXPECT_FALSE(parse_config("enabled = 0").enabled);
     EXPECT_FALSE(parse_config("enabled = nope").enabled);
 }
+
+TEST(Config, ModemTypeDefaultsToAuto) {
+    EXPECT_EQ(parse_config("").modem_type, ModemType::Auto);
+    EXPECT_EQ(parse_config("modem.type = whatever").modem_type, ModemType::Auto);
+}
+
+TEST(Config, ModemTypeParsesFamilies) {
+    EXPECT_EQ(parse_config("modem.type = sierra").modem_type,  ModemType::Sierra);
+    EXPECT_EQ(parse_config("modem.type = QUECTEL").modem_type, ModemType::Quectel);  // case-insensitive
+    EXPECT_EQ(parse_config("modem.type = u-blox").modem_type,  ModemType::UBlox);
+    EXPECT_EQ(parse_config("modem.type = generic").modem_type, ModemType::Generic);
+    EXPECT_EQ(parse_config("modem.type = auto").modem_type,    ModemType::Auto);
+}
+
+TEST(Config, ModemTypeName) {
+    EXPECT_STREQ(modem_type_name(ModemType::Sierra), "sierra");
+    EXPECT_STREQ(modem_type_name(ModemType::Auto),   "auto");
+}

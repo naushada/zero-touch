@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <ctime>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 
@@ -22,8 +23,8 @@
 #include "smsctl/parser.hpp"
 #include "smsctl/session.hpp"
 
-#include "zerotouch/at_modem.hpp"
 #include "zerotouch/at_modem_transport.hpp"
+#include "zerotouch/modem_factory.hpp"
 #include "zerotouch/bridge.hpp"
 #include "zerotouch/config.hpp"
 #include "zerotouch/direct_action_sink.hpp"
@@ -81,7 +82,8 @@ int StandaloneClient::run() {
     m_sessions.set_config(sc);
 
     // ── backends behind the seams ───────────────────────────────────────────
-    AtModem          modem({m_config.modem_dev, m_config.modem_baud});
+    std::unique_ptr<IModem> modem_ptr = make_modem(m_config);   // config → vendor
+    IModem&          modem = *modem_ptr;
     AtModemTransport transport(modem);
     LocalGnmiSink    sink(LocalGnmiSink::Config{m_config.gnmi_host, m_config.gnmi_port});
     DirectActionSink action(modem, [] { ::sync(); ::reboot(RB_AUTOBOOT); return true; });
