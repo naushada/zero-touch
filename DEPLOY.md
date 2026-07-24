@@ -97,6 +97,67 @@ update-rc.d zero-touchd defaults      # or: chkconfig --add zero-touchd
 > image) — `update-rc.d` cannot run against the read-only rootfs at runtime.
 > See [Deploy to the device (read-only rootfs)](#deploy-to-the-device-read-only-rootfs).
 
+## Install the built tarball (systemd or SysV)
+
+Once `build.sh` / `docker-build.sh` has produced a tarball
+(`zero-touchd-aarch64-sysv.tar.gz` or `zero-touchd-standalone-aarch64.tar.gz`),
+here is the whole install. The tarball is a tree rooted at `/` and — because the
+builds set `ZT_INSTALL_SYSV=ON` — ships **both** init files; use whichever your
+device runs:
+
+```
+usr/bin/zero-touchd[-standalone]
+etc/{iot,zerotouch}/…                          # schema+env (integrated) | conf+users (standalone)
+lib/systemd/system/zero-touchd[-standalone].service   # systemd
+etc/init.d/zero-touchd[-standalone]                   # SysV
+```
+
+What decides the steps is **whether the rootfs is writable**, not the init system.
+
+### Writable rootfs (dev board, or remountable)
+
+```sh
+scp zero-touchd-standalone-aarch64.tar.gz root@<device>:/tmp/
+ssh root@<device> 'cd / && tar xzf /tmp/zero-touchd-standalone-aarch64.tar.gz'   # files land in place
+```
+
+Then register with the init system:
+
+```sh
+# systemd
+systemctl daemon-reload
+systemctl enable --now zero-touchd-standalone.service
+
+# SysV
+chmod +x /etc/init.d/zero-touchd-standalone
+update-rc.d zero-touchd-standalone defaults      # or: chkconfig --add zero-touchd-standalone
+/etc/init.d/zero-touchd-standalone start
+```
+
+### Read-only rootfs (production Yocto device)
+
+You **cannot** extract to `/` or register at runtime — `/usr`, `/etc/init.d` and
+`/lib/systemd/system` are read-only, and `update-rc.d` / `systemctl enable` write
+symlinks under the read-only rootfs. Two paths, both detailed below:
+
+- **Persistent** → bake into the image: unpack the tarball into the image rootfs
+  staging and create the init links at **build time** (systemd `SYSTEMD_AUTO_ENABLE`
+  / SysV `chroot … update-rc.d`), or skip the tarball and use the Yocto recipe
+  (`packaging/yocto/`). See
+  [Deploy to the device (read-only rootfs)](#deploy-to-the-device-read-only-rootfs)
+  and the [SysV read-only device runbook](#sysv-read-only-device-runbook).
+- **Ephemeral smoke test** → run from `/run` (writable tmpfs, no reflash, gone on
+  reboot); see
+  [Quick test on a running device](#quick-test-on-a-running-device--run-from-run-no-reflash).
+
+### Verify (either path)
+
+```sh
+pgrep -a zero-touchd-standalone
+# standalone: watch the console/journal for  "modem up on … (Sierra, auto)"
+# then, from an allowlisted phone:  IOT LOGIN admin <pw>  →  IOT STATUS
+```
+
 ## Deploy to the device (read-only rootfs)
 
 > **The device rootfs is read-only** — only `/tmp` and `/run` are writable. So
