@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
-# docker-build.sh — build the aarch64 zero-touchd SysV deploy artifact in a
-# container and copy it to the host's current directory (or $1).
+# docker-build.sh — cross-build the aarch64 deploy artifact on an x86 host and
+# copy it to the host's current directory (or $1).
 #
-# The daemon is built NATIVELY as arm64 via QEMU emulation, so this needs:
+# The daemon is built as arm64 via QEMU emulation (so it runs fine on an x86
+# build host), and `--output type=local` writes the resulting tarball onto the
+# host filesystem — it is NOT left stuck inside a docker image. Needs:
 #   1. QEMU binfmt handlers for arm64 (kernel-level, persists across builds);
 #   2. a buildx "docker-container" builder (the reliable driver for an emulated
 #      --platform build with --output type=local).
@@ -12,26 +14,35 @@
 # manage these yourself.
 #
 # Usage:
-#   ./docker-build.sh [OUTPUT_DIR] [--no-setup]
+#   ./docker-build.sh [--standalone] [OUTPUT_DIR] [--no-setup]
+#     --standalone   build zero-touchd-standalone (Dockerfile.standalone) instead
+#                    of the integrated zero-touchd (Dockerfile).
 #
-# Output: <OUTPUT_DIR>/zero-touchd-aarch64-sysv.tar.gz — a tree rooted at the
-# device filesystem (usr/bin/zero-touchd, etc/init.d/zero-touchd, ds schema,
-# env, systemd unit). Extract it into your image rootfs, or into /run for a
+# Output: <OUTPUT_DIR>/zero-touchd[-standalone]-aarch64*.tar.gz — a tree rooted at
+# the device filesystem. Extract it into your image rootfs, or into /run for a
 # tmpfs smoke test. See DEPLOY.md; it is NOT copied onto a running device.
 
 set -euo pipefail
 
 OUT_DIR="."
 SETUP=1
+STANDALONE=0
 for arg in "$@"; do
     case "$arg" in
-        --no-setup) SETUP=0 ;;
-        -h|--help)  sed -n '2,22p' "$0"; exit 0 ;;
-        *)          OUT_DIR="$arg" ;;
+        --standalone) STANDALONE=1 ;;
+        --no-setup)   SETUP=0 ;;
+        -h|--help)    sed -n '2,25p' "$0"; exit 0 ;;
+        *)            OUT_DIR="$arg" ;;
     esac
 done
 
-ARTIFACT="zero-touchd-aarch64-sysv.tar.gz"
+if [ "$STANDALONE" = 1 ]; then
+    DOCKERFILE="Dockerfile.standalone"
+    ARTIFACT="zero-touchd-standalone-aarch64.tar.gz"
+else
+    DOCKERFILE="Dockerfile"
+    ARTIFACT="zero-touchd-aarch64-sysv.tar.gz"
+fi
 BUILDER="ztbuilder"
 REPO="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO"
@@ -77,12 +88,12 @@ fi
 
 mkdir -p "$OUT_DIR"
 
-echo "==> building aarch64 artifact via buildx → ${OUT_DIR%/}/$ARTIFACT"
+echo "==> building aarch64 artifact ($DOCKERFILE) via buildx → ${OUT_DIR%/}/$ARTIFACT"
 docker buildx build --builder "$BUILDER" \
     --platform linux/arm64 \
     --target export \
     --output "type=local,dest=${OUT_DIR}" \
-    -f Dockerfile .
+    -f "$DOCKERFILE" .
 
 echo
 echo "Done: ${OUT_DIR%/}/${ARTIFACT}"
