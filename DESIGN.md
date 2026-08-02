@@ -35,23 +35,79 @@ API stays fixed while the concrete model varies.
 
 ## Architecture
 
-```
-   MT SMS (any modem)                                gNMI / gRPC (127.0.0.1)
-        │                                                    ▲
-        ▼                                                    │
- ┌───────────────┐  InboundSms   ┌──────────────────┐   ┌─────────────┐
- │ ISmsTransport │─────────────▶ │  zero-touchd     │──▶│  GnmiSink   │
- │  (interface)  │◀───────────── │  bridge + engine │   │ (interface) │
- └───────────────┘  send(to,txt) └──────────────────┘   └─────────────┘
-        ▲ impl                         │ reuses                ▲ impl
- ┌───────────────┐           ┌──────────────────────┐   ┌──────────────┐
- │ DsSmsTransport│           │ smsctl:: tokenize     │   │ LocalGnmiSink│
- │ (sms.last /   │           │   SessionStore (auth) │   │ gnmi_client  │
- │  sms.send)    │           │   Executor (classic)  │   │ ::call()     │
- └───────────────┘           └──────────────────────┘   └──────────────┘
+Solid = request, dashed = response. The dashed-outline blocks are the seams —
+the only places a concrete model is chosen.
+
+```mermaid
+flowchart TB
+    subgraph EDGE["SMS edge (modem varies)"]
+        direction LR
+        CC["cellular-client<br/><i>ds deployment — owns the modem</i>"]
+        IM{{"IModem — seam #3<br/><i>standalone only</i><br/>AtModem"}}
+    end
+
+    TX{{"ISmsTransport — seam #1<br/>DsSmsTransport | AtModemTransport"}}
+
+    subgraph ZTD["zero-touchd"]
+        BR["<b>Bridge</b><br/>allow-gate → tokenize → parse_gnmi"]
+        GE["GnmiExecutor<br/>auth · RBAC · reply format"]
+        SE["smsctl::Executor<br/><i>reused unmodified</i>"]
+        SS[("SessionStore<br/>one login, both branches")]
+    end
+
+    GS{{"GnmiSink — seam #2<br/>LocalGnmiSink"}}
+    DSK{{"smsctl::DsSink<br/><i>smsctl's own seam</i><br/>LiveSink | DirectActionSink"}}
+
+    NG[["gNMI server<br/>127.0.0.1:50051"]]
+    DS[("data-store<br/>cell.* keys + triggers")]
+
+    CC --> TX
+    IM --> TX
+    TX --> BR
+    BR -->|"gnmi GET/SET"| GE --> GS --> NG
+    BR -->|"classic IOT cmd"| SE --> DSK
+    DSK -->|"ds deployment"| DS
+    DSK -->|"standalone: AT + reboot"| IM
+    SS -.->|Access| GE
+    SS -.-> SE
+
+    NG -.->|GetResponse| GS -.->|GnmiResult| GE
+    DS -.-> DSK -.-> SE
+    GE -.->|"OK … / ERR …"| BR
+    SE -.->|reply text| BR
+    BR -.->|"send(to, text)"| TX
+    TX -.-> EDGE
+
+    classDef seam stroke-dasharray:4 3,stroke-width:2px
+    class TX,GS,DSK,IM seam
 ```
 
-Two interface seams, one shared engine reused unmodified.
+Three zero-touch seams (`ISmsTransport`, `GnmiSink`, `IModem`) plus smsctl's own
+`DsSink`, and one shared engine reused unmodified.
+
+Two things the picture is meant to settle:
+
+- **The data store is not in the gNMI path.** In the ds deployment ds serves
+  three *separate* roles — SMS transport (`sms.last.*` / `sms.send.*`), config +
+  accounts (`zerotouch.*`), and the action backend for the **classic** commands
+  (`LiveSink`). The gnmi branch touches none of it: `Bridge → GnmiExecutor →
+  LocalGnmiSink → 127.0.0.1`. The two branches are siblings off the Bridge, not
+  a chain.
+- **`IModem` is shared.** On a standalone box the same AT channel carries SMS
+  (via `AtModemTransport`) and the classic actions (via `DirectActionSink`);
+  implementations serialise it so the two never interleave.
+
+### Response path
+
+Both branches converge on the same return path — that is the point of the split.
+`LocalGnmiSink` decodes the `GetResponse` into `GnmiResult` rows (denylisted
+paths already carry `sensitive path denied`, never a value) and `GnmiExecutor`
+renders `OK …` / `ERR …` clamped to one SMS; on the other side `smsctl::Executor`
+renders its own reply text. Both hand a `std::string` back to `Bridge::on_sms`,
+which applies one rule: **empty string → send nothing** (the silent-drop contract
+for `NotACommand` and disallowed senders, so the device is not an oracle). A
+non-empty reply goes out `ISmsTransport::send`, back through the modem it arrived
+on — `AT+CMGS` standalone, `sms.send.*` + request bump on ds.
 
 ### Message flow
 
