@@ -53,6 +53,70 @@ API stays fixed while the concrete model varies.
 
 Two interface seams, one shared engine reused unmodified.
 
+### Message flow
+
+One inbound SMS, end to end, in the **standalone** wiring (`AtModem` +
+`DirectActionSink`). The ds-backed daemon is the same sequence with
+`DsSmsTransport` in place of `AtModemTransport` and `smsctl::DsSink` writing ds
+keys instead of `DirectActionSink` driving AT.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Sender (MSISDN)
+    participant M as AtModem<br/>(IModem)
+    participant T as AtModemTransport<br/>(ISmsTransport)
+    participant B as Bridge
+    participant G as GnmiExecutor
+    participant S as LocalGnmiSink<br/>(GnmiSink)
+    participant N as gNMI server<br/>127.0.0.1
+    participant E as smsctl::Executor
+    participant D as DirectActionSink<br/>(smsctl::DsSink)
+
+    Note over M,B: startup: bridge.start() → tx.on_message(cb) → tx.start() → modem.start()
+
+    U-->>M: MT SMS
+    M->>M: +CMTI URC → AT+CMGR → PDU decode
+    M->>T: SmsFn(InboundSms{sender,text,ts})
+    T->>B: on_sms(in)
+
+    B->>B: allow(sender)
+    alt not enabled / not allowlisted
+        B--xU: dropped in silence (no reply)
+    else allowed
+        B->>B: tokenize(text) → parse_gnmi(tokens)
+
+        alt kind != NotGnmi
+            B->>G: handle(cmd, sender)
+            G->>G: auth(sender) → Access
+            alt Access insufficient
+                G-->>B: "ERR ..."
+            else GET (Viewer) / SET (Admin)
+                G->>S: get(xpaths) / set(updates)
+                S->>N: gNMI Get / Set RPC
+                N-->>S: GnmiResult{grpc_status, paths[]}
+                S->>S: strip denylisted paths (path_policy)
+                S-->>G: GnmiResult
+                G-->>B: "OK ..." (clamped to 1 SMS)
+            end
+        else classic IOT command
+            B->>E: fallback(sender, text)
+            E->>D: set/get/arm_trigger(key, value)
+            D->>M: AT+CGDCONT / AT+CFUN / AT+CREG? / AT+CSQ
+            M-->>D: AtResult{ok, lines}
+            D-->>E: value / bool
+            E-->>B: reply text ("" → drop)
+        end
+
+        opt reply non-empty
+            B->>T: send(sender, reply)
+            T->>M: send_sms(to, text)
+            M->>M: AT+CMGS (PDU, concat)
+            M-->>U: MO SMS reply
+        end
+    end
+```
+
 ### Why zero-touchd replaces iot-smsctld on the device
 
 `smsctl`'s `Kind` enum is fixed in the iot repo, and we keep iot untouched. So
