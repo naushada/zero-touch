@@ -29,6 +29,128 @@ WP7702 = Sierra).
 See [DESIGN.md](DESIGN.md) for the architecture and [DEPLOY.md](DEPLOY.md) for
 deploying either daemon on a device.
 
+## Architecture
+
+Solid = request, dashed = response. The dashed-outline blocks are the seams —
+the only places a concrete model is chosen.
+
+```mermaid
+flowchart TB
+    subgraph EDGE["SMS edge (modem varies)"]
+        direction LR
+        CC["cellular-client<br/><i>ds deployment — owns the modem</i>"]
+        IM{{"IModem — seam #3<br/><i>standalone only</i><br/>AtModem"}}
+    end
+
+    TX{{"ISmsTransport — seam #1<br/>DsSmsTransport | AtModemTransport"}}
+
+    subgraph ZTD["zero-touchd"]
+        BR["<b>Bridge</b><br/>allow-gate → tokenize → parse_gnmi"]
+        GE["GnmiExecutor<br/>auth · RBAC · reply format"]
+        SE["smsctl::Executor<br/><i>reused unmodified</i>"]
+        SS[("SessionStore<br/>one login, both branches")]
+    end
+
+    GS{{"GnmiSink — seam #2<br/>LocalGnmiSink"}}
+    DSK{{"smsctl::DsSink<br/><i>smsctl's own seam</i><br/>LiveSink | DirectActionSink"}}
+
+    NG[["gNMI server<br/>127.0.0.1:50051"]]
+    DS[("data-store<br/>cell.* keys + triggers")]
+
+    CC --> TX
+    IM --> TX
+    TX --> BR
+    BR -->|"gnmi GET/SET"| GE --> GS --> NG
+    BR -->|"classic IOT cmd"| SE --> DSK
+    DSK -->|"ds deployment"| DS
+    DSK -->|"standalone: AT + reboot"| IM
+    SS -.->|Access| GE
+    SS -.-> SE
+
+    NG -.->|GetResponse| GS -.->|GnmiResult| GE
+    DS -.-> DSK -.-> SE
+    GE -.->|"OK … / ERR …"| BR
+    SE -.->|reply text| BR
+    BR -.->|"send(to, text)"| TX
+    TX -.-> EDGE
+
+    classDef seam stroke-dasharray:4 3,stroke-width:2px
+    class TX,GS,DSK,IM seam
+```
+
+The gnmi and classic branches are **siblings off the `Bridge`, not a chain** —
+the data store is not in the gnmi path. On a standalone box `IModem` is shared:
+the same serialised AT channel carries SMS (`AtModemTransport`) and the classic
+actions (`DirectActionSink`).
+
+### Message flow
+
+One inbound SMS end to end, in the **standalone** wiring. The ds-backed daemon is
+the same sequence with `DsSmsTransport` in place of `AtModemTransport` and
+`LiveSink` writing ds keys instead of `DirectActionSink` driving AT.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Sender (MSISDN)
+    participant M as AtModem<br/>(IModem)
+    participant T as AtModemTransport<br/>(ISmsTransport)
+    participant B as Bridge
+    participant G as GnmiExecutor
+    participant S as LocalGnmiSink<br/>(GnmiSink)
+    participant N as gNMI server<br/>127.0.0.1
+    participant E as smsctl::Executor
+    participant D as DirectActionSink<br/>(smsctl::DsSink)
+
+    Note over M,B: startup: bridge.start() → tx.on_message(cb) → tx.start() → modem.start()
+
+    U-->>M: MT SMS
+    M->>M: +CMTI URC → AT+CMGR → PDU decode
+    M->>T: SmsFn(InboundSms{sender,text,ts})
+    T->>B: on_sms(in)
+
+    B->>B: allow(sender)
+    alt not enabled / not allowlisted
+        B--xU: dropped in silence (no reply)
+    else allowed
+        B->>B: tokenize(text) → parse_gnmi(tokens)
+
+        alt kind != NotGnmi
+            B->>G: handle(cmd, sender)
+            G->>G: auth(sender) → Access
+            alt Access insufficient
+                G-->>B: "ERR ..."
+            else GET (Viewer) / SET (Admin)
+                G->>S: get(xpaths) / set(updates)
+                S->>N: gNMI Get / Set RPC
+                N-->>S: GnmiResult{grpc_status, paths[]}
+                S->>S: strip denylisted paths (path_policy)
+                S-->>G: GnmiResult
+                G-->>B: "OK ..." (clamped to 1 SMS)
+            end
+        else classic IOT command
+            B->>E: fallback(sender, text)
+            E->>D: set/get/arm_trigger(key, value)
+            D->>M: AT+CGDCONT / AT+CFUN / AT+CREG? / AT+CSQ
+            M-->>D: AtResult{ok, lines}
+            D-->>E: value / bool
+            E-->>B: reply text ("" → drop)
+        end
+
+        opt reply non-empty
+            B->>T: send(sender, reply)
+            T->>M: send_sms(to, text)
+            M->>M: AT+CMGS (PDU, concat)
+            M-->>U: MO SMS reply
+        end
+    end
+```
+
+Both branches converge on one return path, and `Bridge::on_sms` applies a single
+rule: **empty reply → send nothing** — the silent-drop contract that keeps the
+device from being an oracle. Full walkthrough in
+[DESIGN.md](DESIGN.md#architecture).
+
 ## Layout
 
 ```
