@@ -1,19 +1,30 @@
 # syntax=docker/dockerfile:1
 #
-# zerotouch-sim in a container — the offline SMS simulator that bypasses the SMS
-# transport (each typed line lands straight at Bridge::on_sms; no modem /
-# ds-server / gRPC, in-memory gNMI). Built for the HOST arch — it needs only the
-# smsctl engine + zerotouch core (no ACE/protobuf), so this is a plain native
-# build, not the aarch64 cross image.
+# zerotouch-sim + zt-gnmi-simd — the zero-touch simulation image.
+#
+# One image, two binaries, so both demo shapes come from the same build:
+#   zerotouch-sim                     SMS CLI, in-memory gNMI tree (no gRPC)
+#   zerotouch-sim --gnmi=HOST:PORT    SMS CLI driving a REAL gNMI server
+#   zt-gnmi-simd                      that gNMI server (in-memory config tree)
+#
+# Built for the HOST arch (this is a demo tool, not the aarch64 device image).
+# Unlike the device build it enables ZT_BUILD_GNMI, so it carries protobuf,
+# libevent, nghttp2 and Lua — that is what makes the real wire available.
 #
 #   ./build.sh --sim     # builds this image  (zerotouch-sim:local)
-#   ./sim.sh             # runs it interactively — SIM banner + REPL
+#   ./sim.sh             # CLI only, in-memory gNMI
+#   ./sim.sh --wire      # server + CLI, real gRPC between them
 
 FROM debian:bookworm-slim
 ARG DEBIAN_FRONTEND=noninteractive
 
+# libssl/protobuf/libevent/nghttp2/lua are the ZT_BUILD_GNMI dependency set —
+# the same libraries the device/Yocto toolchain provides for LocalGnmiSink.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake git ca-certificates libssl-dev \
+        build-essential cmake git pkg-config ca-certificates \
+        libssl-dev \
+        protobuf-compiler libprotobuf-dev \
+        libevent-dev libnghttp2-dev liblua5.4-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -21,11 +32,18 @@ WORKDIR /src
 # recursive submodule init first; see .dockerignore).
 COPY . .
 
-RUN cmake -S . -B build -DZT_BUILD_TESTS=OFF -DZT_BUILD_SIM=ON \
-    && cmake --build build --target zerotouch-sim -j"$(nproc)" \
+RUN cmake -S . -B build -DZT_BUILD_TESTS=OFF -DZT_BUILD_SIM=ON -DZT_BUILD_GNMI=ON \
+    && cmake --build build --target zerotouch-sim zt-gnmi-simd -j"$(nproc)" \
     && install -m 0755 build/zerotouch-sim /usr/local/bin/zerotouch-sim \
+    && install -m 0755 build/zt-gnmi-simd  /usr/local/bin/zt-gnmi-simd \
+    && install -d /etc/zerotouch \
+    && install -m 0644 sim/gnmi-tree.lua /etc/zerotouch/gnmi-tree.lua \
     && install -m 0755 packaging/sim/entrypoint.sh /usr/local/bin/zt-sim-entrypoint
 
-# Banner on entry, then run CMD (the sim) — or an overriding arg (e.g. `sh`).
+# The gNMI server's default port; published only when the server service runs.
+EXPOSE 50051
+
+# Banner on entry, then run CMD (the CLI) — or an overriding arg (e.g. `sh`,
+# or `zt-gnmi-simd` when this image runs as the server service).
 ENTRYPOINT ["/usr/local/bin/zt-sim-entrypoint"]
 CMD ["zerotouch-sim"]

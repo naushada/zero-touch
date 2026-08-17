@@ -132,9 +132,11 @@ if(ZT_BUILD_DS)
     add_library(zerotouch::ds ALIAS zerotouch_ds)
 endif()
 
-# ── zerotouch-sim: offline SMS simulator (host tool, no modem/ds/gRPC) ───────
-# Uses the real smsctl engine (needs smsctl::core + iot's json single_include)
-# with in-memory ds/gNMI backends. Skips gracefully if the json submodule is not
+# ── zerotouch-sim: SMS simulator (host tool, no modem/ds) ───────────────────
+# Uses the real smsctl engine (needs smsctl::core + iot's json single_include).
+# The gNMI backend is chosen at RUNTIME through the GnmiSink seam: an in-memory
+# tree by default, or — when ZT_BUILD_GNMI is also ON — the real LocalGnmiSink
+# over gRPC via `--gnmi=HOST:PORT`. Skips gracefully if the json submodule is not
 # initialised, so the pure test build never breaks.
 if(ZT_BUILD_SIM)
     set(ZT_SIM_JSON
@@ -145,9 +147,35 @@ if(ZT_BUILD_SIM)
             ${CMAKE_CURRENT_SOURCE_DIR}/inc ${IOT_SMSCTL_DIR}/inc)
         target_link_libraries(zerotouch-sim PRIVATE zerotouch_core smsctl_core)
         target_compile_options(zerotouch-sim PRIVATE -Wall -Wextra)
+        if(TARGET zerotouch_gnmi)
+            target_link_libraries(zerotouch-sim PRIVATE zerotouch_gnmi)
+            target_compile_definitions(zerotouch-sim PRIVATE ZT_SIM_WITH_GNMI)
+        endif()
     else()
         message(STATUS "zerotouch-sim skipped — run: "
                        "git submodule update --init --recursive")
+    endif()
+
+    # ── zt-gnmi-simd: the simulated device's gNMI server ────────────────────
+    # Reuses grace-server's grpc_session / evt_io / gnmi_util / protos (all
+    # already compiled into zerotouch_gnmi) and registers its OWN Get/Set
+    # handlers over an in-memory tree — grace-server's own handlers are stubs
+    # that never store, so a SET could not be read back by a GET.
+    if(TARGET zerotouch_gnmi)
+        # lua_engine.cpp is not part of zerotouch_gnmi (nothing there reads Lua
+        # files); the seed loader needs it — project rule 3, Lua I/O goes through
+        # lua_engine, never std::ifstream.
+        add_executable(zt-gnmi-simd sim/zt_gnmi_simd.cpp ${GS_APP}/src/lua_engine.cpp)
+        target_include_directories(zt-gnmi-simd PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc
+            ${CMAKE_CURRENT_SOURCE_DIR}/sim
+            ${GS_APP}/inc ${GS_APP}/openvpn/inc
+            ${NGHTTP2_INCLUDE_DIRS} ${LIBEVENT_INCLUDE_DIRS} ${LUA_INCLUDE_DIR})
+        target_link_libraries(zt-gnmi-simd PRIVATE zerotouch_gnmi)
+        target_compile_options(zt-gnmi-simd PRIVATE -Wall -Wextra)
+    else()
+        message(STATUS "zt-gnmi-simd skipped — needs -DZT_BUILD_GNMI=ON "
+                       "(protobuf/libevent/nghttp2/lua)")
     endif()
 endif()
 
@@ -193,9 +221,11 @@ if(ZT_BUILD_TESTS)
         test/users_test.cpp
         test/modem_test.cpp
         test/at_modem_transport_test.cpp
-        test/bridge_test.cpp)
+        test/bridge_test.cpp
+        test/gnmi_tree_test.cpp)
     target_include_directories(zerotouch-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/sim
         ${CMAKE_CURRENT_SOURCE_DIR}/test)
     target_link_libraries(zerotouch-tests PRIVATE
         zerotouch_core GTest::gtest GTest::gtest_main)

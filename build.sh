@@ -21,12 +21,12 @@
 #   # Standalone appliance (add to either of the above):
 #   ./build.sh --standalone --sdk /opt/poky/<ver>/environment-setup-…
 #
-#   # Offline SMS simulator — builds a Docker image (run it with ./sim.sh):
+#   # Simulator — builds a container image (run it with ./sim.sh):
 #   ./build.sh --sim
 #
 # Options:
-#   --sim                  Build the zerotouch-sim Docker image (host arch, no
-#                          cross toolchain / sysroot); run it with ./sim.sh.
+#   --sim                  Build the simulator image, podman or docker (host
+#                          arch, no cross toolchain); run it with ./sim.sh.
 #   --standalone           Build zero-touchd-standalone (ds-free) instead of the
 #                          integrated zero-touchd.
 #   --sdk <env-script>     Yocto SDK environment-setup script to source.
@@ -96,20 +96,32 @@ if [ ! -f third_party/iot/apps/3rdparty/json/single_include/nlohmann/json.hpp ];
     git submodule update --init --recursive
 fi
 
-# ── offline simulator: build a Docker image (host arch, no cross / sysroot) ───
-# The sim needs only the smsctl engine + zerotouch core (no ACE/protobuf/gRPC),
-# so Dockerfile.sim is a plain host-arch build. Run it with ./sim.sh.
+# ── simulator: build a container image (host arch, no cross / sysroot) ───────
+# Carries both sim binaries — zerotouch-sim (the SMS CLI) and zt-gnmi-simd (the
+# simulated device's gNMI server) — so the image builds with ZT_BUILD_GNMI=ON
+# and pulls protobuf/libevent/nghttp2/lua. Run it with ./sim.sh.
+#
+# Works with podman or docker: podman is preferred when both are installed;
+# set CONTAINER_ENGINE=docker to force the other one.
 if [ "$SIM" = 1 ]; then
-    if ! command -v docker >/dev/null 2>&1; then
-        die "docker not found (--sim builds an image; for a native build instead:
-       cmake -S . -B build -DZT_BUILD_SIM=ON && cmake --build build --target zerotouch-sim)"
+    ENGINE="${CONTAINER_ENGINE:-}"
+    if [ -z "$ENGINE" ]; then
+        if   command -v podman >/dev/null 2>&1; then ENGINE=podman
+        elif command -v docker >/dev/null 2>&1; then ENGINE=docker
+        fi
+    fi
+    if [ -z "$ENGINE" ] || ! command -v "$ENGINE" >/dev/null 2>&1; then
+        die "no container engine found (looked for podman, then docker).
+       Set CONTAINER_ENGINE=<engine>, or build natively instead:
+       cmake -S . -B build -DZT_BUILD_SIM=ON && cmake --build build --target zerotouch-sim"
     fi
     IMG="zerotouch-sim:local"
-    echo "==> building the simulator image ($IMG)…"
-    docker build -f Dockerfile.sim -t "$IMG" .
+    echo "==> building the simulator image ($IMG) with $ENGINE…"
+    "$ENGINE" build -f Dockerfile.sim -t "$IMG" .
     echo
-    echo "Done: image $IMG"
-    echo "Run:  ./sim.sh"
+    echo "Done: image $IMG  (zerotouch-sim + zt-gnmi-simd)"
+    echo "Run:  ./sim.sh          # CLI only, in-memory gNMI"
+    echo "      ./sim.sh --wire   # CLI + real gNMI server over gRPC"
     exit 0
 fi
 
