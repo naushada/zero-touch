@@ -1,0 +1,51 @@
+# Two-service zero-touch simulation: the SMS CLI on one side, a real gNMI
+# server on the other, with a real gRPC connection between them.
+#
+#   podman compose -f sim/compose.yml run --rm cli
+#
+# (./sim.sh --wire wraps that, including building the image first.)
+#
+# gnmid  — zt-gnmi-simd, the simulated device: serves gNMI Get/Set over gRPC
+#          on 50051, backed by the tree seeded from sim/gnmi-tree.lua.
+# cli    — zerotouch-sim pointed at it. The Bridge, session/auth, command parser
+#          and reply formatter are the SAME code zero-touchd runs on a device;
+#          only the SMS transport is the console.
+#
+# Both use one image (built from Dockerfile.sim) — different commands.
+
+services:
+  gnmid:
+    image: zerotouch-sim:local
+    build:
+      context: ..
+      dockerfile: Dockerfile.sim
+    container_name: zt-gnmid
+    command: ["zt-gnmi-simd", "--listen=0.0.0.0:50051",
+              "--seed=/etc/zerotouch/gnmi-tree.lua"]
+    # Mounted rather than baked so you can edit the demo tree and just restart
+    # this service. :ro because the server never writes it back (a SET lands in
+    # memory only — restart resets the device to its seeded state).
+    volumes:
+      - ./gnmi-tree.lua:/etc/zerotouch/gnmi-tree.lua:ro
+    # No `ports:` on purpose. The CLI reaches the server as `gnmid:50051` over
+    # ztnet, so publishing to the host buys nothing for the demo and only
+    # invites "address already in use" on a machine that has something else on
+    # 50051. To poke the server from the host (grpcurl, another client), add:
+    #     ports: ["50051:50051"]
+    networks: [ztnet]
+
+  cli:
+    image: zerotouch-sim:local
+    build:
+      context: ..
+      dockerfile: Dockerfile.sim
+    container_name: zt-cli
+    depends_on: [gnmid]
+    command: ["zerotouch-sim", "--gnmi=gnmid:50051"]
+    stdin_open: true       # the REPL needs stdin…
+    tty: true              # …and a TTY for the prompt
+    networks: [ztnet]
+
+networks:
+  ztnet:
+    driver: bridge

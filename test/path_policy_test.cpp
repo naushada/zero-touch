@@ -22,6 +22,19 @@ TEST(PathPolicy, OrdinaryPathsAllowed) {
     EXPECT_FALSE(is_sensitive_path("/"));
 }
 
+TEST(PathPolicy, ContainerPathDoesNotInheritItsChildrensSensitivity) {
+    // The asymmetry that makes response-side filtering mandatory in
+    // LocalGnmiSink::get: these container paths are NOT sensitive, so they sail
+    // through the request-side check — but a gNMI Get on them returns the
+    // subtree, which does carry the secret leaves below. Screening only what was
+    // asked for would therefore leak. See local_gnmi_sink.hpp.
+    EXPECT_FALSE(is_sensitive_path("/system/aaa"));
+    EXPECT_FALSE(is_sensitive_path("/system"));
+    EXPECT_FALSE(is_sensitive_path("/"));
+    // …while the leaves the server returns underneath them are caught.
+    EXPECT_TRUE(is_sensitive_path("/system/aaa/user[name=admin]/config/password"));
+}
+
 TEST(PathPolicy, CustomTokens) {
     const std::vector<std::string> tokens = {"mrn", "iccid"};
     EXPECT_TRUE(is_sensitive_path("/sim/config/iccid", tokens));

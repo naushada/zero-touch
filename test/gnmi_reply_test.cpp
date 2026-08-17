@@ -55,6 +55,35 @@ TEST(GnmiReply, SetError) {
     EXPECT_EQ(format_set(r, 1), "ERR GNMI SET invalid-argument");
 }
 
+TEST(GnmiReply, StatusNameUsedWhenServerSendsNoMessage) {
+    // grace-server's grpc_session emits only the `grpc-status` trailer, never
+    // `grpc-message`, so this is the COMMON case against a real server: the
+    // reply must still say what went wrong, not a bare "failed".
+    GnmiResult r;
+    r.ok = false;
+    r.grpc_status = 7;            // PERMISSION_DENIED
+    EXPECT_EQ(format_set(r, 1), "ERR GNMI SET permission denied");
+
+    r.grpc_status = 5;            // NOT_FOUND
+    EXPECT_EQ(format_get(r), "ERR GNMI GET not found");
+
+    r.grpc_status = -1;           // never got a status at all
+    EXPECT_EQ(format_get(r), "ERR GNMI GET transport error");
+}
+
+TEST(GnmiReply, ServerMessageWinsOverStatusName) {
+    GnmiResult r;
+    r.ok = false;
+    r.grpc_status = 7;
+    r.grpc_message = "role ADMIN required";
+    EXPECT_EQ(format_set(r, 1), "ERR GNMI SET role ADMIN required");
+}
+
+TEST(GnmiReply, StatusTextCoversUnknownAndZero) {
+    EXPECT_EQ(grpc_status_text(0), "failed");        // ok=false for another reason
+    EXPECT_EQ(grpc_status_text(99), "status 99");    // outside the canonical set
+}
+
 TEST(GnmiReply, ClampAddsEllipsis) {
     const std::string big(300, 'x');
     const auto out = clamp_sms(big);

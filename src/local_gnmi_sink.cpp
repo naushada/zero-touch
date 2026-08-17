@@ -21,19 +21,17 @@ namespace {
 
 /// Map a gnmi_client transport/status outcome onto a GnmiResult shell. Returns
 /// true when the RPC succeeded (status 0) and the body is worth decoding.
+///
+/// The status is reported as-is and `grpc_message` carries only what the server
+/// actually sent — we do NOT synthesise a placeholder here. Most gNMI servers
+/// (grace-server's grpc_session included) send `grpc-status` with no
+/// `grpc-message`, and naming that code is the reply layer's job: see
+/// grpc_status_text(), which turns 7 into "permission denied" rather than the
+/// "status 7" a placeholder here would lock in.
 bool rpc_ok(const gnmi_client::response& r, GnmiResult& out) {
     out.grpc_status  = r.grpc_status;
     out.grpc_message = r.grpc_message;
-    if (r.grpc_status < 0) {                       // transport error
-        if (out.grpc_message.empty()) out.grpc_message = "transport error";
-        return false;
-    }
-    if (r.grpc_status != 0) {                      // non-OK gRPC status
-        if (out.grpc_message.empty())
-            out.grpc_message = "status " + std::to_string(r.grpc_status);
-        return false;
-    }
-    return true;
+    return r.grpc_status == 0;
 }
 
 } // namespace
@@ -79,11 +77,24 @@ GnmiResult LocalGnmiSink::get(const std::vector<std::string>& xpaths) {
         return out;
     }
 
-    // Flatten notifications → one row per returned leaf.
-    for (const auto& notif : resp.notification())
-        for (const auto& u : notif.update())
-            out.paths.push_back({gnmi_util::path_to_string(u.path()),
-                                 gnmi_util::typed_value_to_string(u.val()), ""});
+    // Flatten notifications → one row per returned leaf, re-checking the
+    // denylist on the way OUT.
+    //
+    // Pre-filtering the request is not sufficient: a gNMI Get on a container
+    // path returns the whole subtree, so `GET /system` (or `/`) asks for a path
+    // that matches no deny token yet comes back carrying every leaf beneath it —
+    // passwords included. Screening only the requested xpath would let exactly
+    // the secrets this denylist exists to stop ride out over plaintext SMS.
+    for (const auto& notif : resp.notification()) {
+        for (const auto& u : notif.update()) {
+            const std::string xp = gnmi_util::path_to_string(u.path());
+            if (is_sensitive_path(xp, deny)) {
+                out.paths.push_back({xp, "", "sensitive path denied"});
+                continue;
+            }
+            out.paths.push_back({xp, gnmi_util::typed_value_to_string(u.val()), ""});
+        }
+    }
 
     // The RPC succeeded, so ok=true: any per-path error rows (e.g. the denied
     // paths added above) are rendered by format_get's OK branch as `<error>`,

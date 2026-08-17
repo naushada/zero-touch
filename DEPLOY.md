@@ -560,18 +560,27 @@ tests.
 
 Before touching a device, drive the exact same engine from a keyboard with the
 simulator — it wires the **real** `Bridge` behind an in-process transport, so
-each line lands straight at `Bridge::on_sms` (no modem, ds-server, or gRPC;
-in-memory gNMI):
+each line lands straight at `Bridge::on_sms` (no modem, no ds-server):
 
 ```sh
-./sim.sh          # builds + runs the zerotouch-sim container (SIM banner + REPL)
+./sim.sh          # CLI only — gNMI is an in-memory tree, no sockets
+./sim.sh --wire   # CLI + zt-gnmi-simd: a real gNMI server, real gRPC between them
 ./sim.sh sh       # a shell in the same container
-# native (no Docker): cmake -S . -B build -DZT_BUILD_SIM=ON && ./build/zerotouch-sim
+# native: cmake -S . -B build -DZT_BUILD_SIM=ON && ./build/zerotouch-sim
 ```
 
-It's the fastest way to learn the `IOT GNMI …` grammar and confirm the
-sensitive-path denial and allowlist/enabled gating behave as you expect. See the
-README for a sample session.
+Runs on podman or docker (podman preferred when both are present; set
+`CONTAINER_ENGINE=docker` to force the other).
+
+Plain `./sim.sh` is the fastest way to learn the `IOT GNMI …` grammar and confirm
+the sensitive-path denial and allowlist/enabled gating behave as you expect.
+
+Use `--wire` when you want to rehearse against something that behaves like the
+device's gNMI server: it exercises the same `LocalGnmiSink` the daemon uses, so
+path syntax, `TypedValue` encoding and gRPC status handling are all real. If a
+path works there, the only remaining variables on the device are the server's own
+YANG schema and its RBAC. Seed the tree from `sim/gnmi-tree.lua` to mirror the
+paths you plan to provision. See [sim/README.md](sim/README.md).
 
 ## Enable
 

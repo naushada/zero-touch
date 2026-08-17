@@ -157,47 +157,56 @@ device from being an oracle. Full walkthrough in
 inc/zerotouch/   ISmsTransport, GnmiSink, IModem + command layer   (the seams)
 src/             gnmi command layer + transport/sink/modem impls
 daemon/          zero-touchd (integrated) + zero-touchd-standalone
-sim/             zerotouch-sim — offline SMS simulator (no modem/ds/gRPC)
+sim/             zerotouch-sim (SMS CLI) + zt-gnmi-simd (a real gNMI server)
 test/            host tests (mocks: no modem, no ds, no gRPC)
 schemas/         zerotouch.lua — ds key schema (integrated)
 packaging/       systemd units + SysV init + env / config / users files
 third_party/     iot, grace-server (submodules)
 ```
 
-## Try it offline — `zerotouch-sim`
+## Try it — the simulation
 
-`zerotouch-sim` **bypasses the SMS transport**: it wires the **real** `Bridge`
-(smsctl parser/session/executor + the zerotouch gnmi layer) behind an in-process
-console transport, so each line you type lands straight at `Bridge::on_sms` — no
-modem, no ds-server, no gRPC (the gNMI backend is an in-memory tree).
+`sim/` runs the **real** command path (smsctl parser/session/executor + the
+zerotouch gnmi layer) behind an in-process console transport, so each line you
+type lands straight at `Bridge::on_sms`. No modem, no ds-server, no device.
 
-Run it in its container (a **SIM** banner shows on entry):
+Two shapes, differing only in what sits behind the `GnmiSink` seam:
 
 ```sh
-./sim.sh                    # builds the zerotouch-sim image if needed, then runs it
-./sim.sh --rebuild          # force a fresh image
-./sim.sh sh                 # drop into a shell in the container instead
-# native (no Docker): cmake -S . -B build -DZT_BUILD_SIM=ON && ./build/zerotouch-sim
+./sim.sh                  # CLI only — gNMI is an in-memory tree, no sockets
+./sim.sh --wire           # CLI + zt-gnmi-simd, a real gNMI server over gRPC
+./sim.sh --rebuild        # force a fresh image
+# native: cmake -S . -B build -DZT_BUILD_SIM=ON && ./build/zerotouch-sim
 ```
 
+`--wire` is the one that exercises `LocalGnmiSink` — protobuf path codecs,
+`TypedValue` encoding, RBAC via `prefix.target`, response decoding — the only
+place that code runs outside a device. Podman or docker (podman preferred;
+`CONTAINER_ENGINE=docker` overrides).
+
 ```
-$ ./sim.sh
-   ____ ___ __  __
-  / ___|_ _|  \/  |
-  \___ \| || |\/| |
-   ___) | || |  | |
-  |____/___|_|  |_|
-  zero-touch offline simulator  —  no modem / ds-server / gRPC
+$ ./sim.sh --wire
+   _____               _____                _
+  |__  /___ _ __ ___  |_   _|__  _   _  ___| |__
+    / // _ \ '__/ _ \   | |/ _ \| | | |/ __| '_ \
+   / /|  __/ | | (_) |  | | (_) | |_| | (__| | | |
+  /____\___|_|  \___/   |_|\___/ \__,_|\___|_| |_|
+  gNMI backend: LocalGnmiSink → gRPC zt-gnmid:50051
+> IOT GNMI GET /system/config/hostname
+  ← SMS to +15551230000: ERR GNMI GET login required
 > IOT LOGIN admin admin
   ← SMS to +15551230000: OK LOGIN: admin, 10 min
-> IOT GNMI GET /system/config/hostname,/system/aaa/user[name=admin]/config/password
-  ← SMS to +15551230000: OK GNMI GET /system/config/hostname=demo-router; /system/aaa/user[name=admin]/config/password=<sensitive path denied>
-> IOT GNMI SET /system/config/hostname router-7
-  ← SMS to +15551230000: OK GNMI SET 1 path(s) updated
+> IOT GNMI SET /system/config/hostname,/cellular/config/apn router-7,iot.m2m
+  ← SMS to +15551230000: OK GNMI SET 2 path(s) updated
+> IOT GNMI GET /system/config/hostname,/cellular/config/apn
+  ← SMS to +15551230000: OK GNMI GET /system/config/hostname=router-7; /cellular/config/apn=iot.m2m
+> IOT GNMI GET /system/aaa
+  ← SMS to +15551230000: OK GNMI GET /system/aaa/user[name=admin]/config/password=<sensitive path denied>; …
 ```
 
 `/help` lists the REPL commands (`/from`, `/enable`, `/disable`, `/allow`,
-`/tree`, `/users`).
+`/tree`, `/users`). Full walkthrough, including what each exchange proves and
+how the server behaves, in [sim/README.md](sim/README.md).
 
 ## Build (host tests)
 
