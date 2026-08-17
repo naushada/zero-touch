@@ -122,10 +122,11 @@ sequenceDiagram
                 G-->>B: "ERR ..."
             else GET (Viewer) / SET (Admin)
                 G->>S: get(xpaths) / set(updates)
+                S->>S: GET: drop denylisted xpaths (path_policy)
                 S->>N: gNMI Get / Set RPC
-                N-->>S: GnmiResult{grpc_status, paths[]}
-                S->>S: strip denylisted paths (path_policy)
-                S-->>G: GnmiResult
+                N-->>S: GetResponse / SetResponse + grpc-status
+                S->>S: GET: mask denylisted leaves in the response
+                S-->>G: GnmiResult{grpc_status, paths[]}
                 G-->>B: "OK ..." (clamped to 1 SMS)
             end
         else classic IOT command
