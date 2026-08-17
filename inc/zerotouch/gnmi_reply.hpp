@@ -17,6 +17,13 @@ namespace zerotouch {
 /// One GSM-7 SMS.
 constexpr std::size_t kMaxReply = 160;
 
+/// Canonical gRPC status name for `code` ("permission denied", "not found", …).
+/// Used when the server closed the RPC with a non-OK status but sent no
+/// `grpc-message` trailer — which is common (grace-server's grpc_session only
+/// ever emits `grpc-status`), and would otherwise leave the operator with a
+/// bare "failed" and nothing to act on.
+std::string grpc_status_text(int code);
+
 /// `OK GNMI GET /p=val; /p2=val2` or `ERR GNMI GET <grpc-message>`.
 std::string format_get(const GnmiResult& r);
 
