@@ -149,10 +149,11 @@ sequenceDiagram
                 G-->>B: "ERR ..."
             else GET (Viewer) / SET (Admin)
                 G->>S: get(xpaths) / set(updates)
+                S->>S: GET: drop denylisted xpaths (path_policy)
                 S->>N: gNMI Get / Set RPC
-                N-->>S: GnmiResult{grpc_status, paths[]}
-                S->>S: strip denylisted paths (path_policy)
-                S-->>G: GnmiResult
+                N-->>S: GetResponse / SetResponse + grpc-status
+                S->>S: GET: mask denylisted leaves in the response
+                S-->>G: GnmiResult{grpc_status, paths[]}
                 G-->>B: "OK ..." (clamped to 1 SMS)
             end
         else classic IOT command
@@ -235,8 +236,18 @@ struct GnmiSink {
   grace-server's `gnmi_util::parse_yang_path`, calls `gnmi_client::call(
   "127.0.0.1", port, …)`, decodes the response. Enforces a **sensitive-path
   denylist** so a GET cannot exfiltrate credentials over plaintext SMS even when
-  Admin-gated.
+  Admin-gated — on both legs: a denylisted xpath is never sent, and every leaf
+  the server returns is re-checked (a subtree GET names no secret but the
+  response carries the leaves below it).
 - **MockGnmiSink** for host tests.
+- **MemGnmiSink** — the simulator's in-process tree, so the whole command path
+  runs with no gRPC at all. `zerotouch-sim --gnmi=HOST:PORT` swaps it for the
+  real `LocalGnmiSink`; see [Simulation](#simulation).
+
+`GnmiResult.grpc_message` carries only what the server actually sent. The
+`grpc-message` trailer is optional and commonly absent, so the reply layer names
+the status code itself (`grpc_status_text`) rather than the sink inventing a
+placeholder — otherwise a PERMISSION_DENIED reaches the operator as "failed".
 
 ### IModem — the AT-modem seam (standalone only)
 
@@ -318,6 +329,47 @@ IOT GNMI SET <xpath[,xpath...]> <value[,value...]>   # positional pairing
   - `ERR GNMI SET <grpc-message>`
 - Values are never echoed for sensitive paths; errors never leak argument values.
 
+## Simulation
+
+`sim/` runs the command path with no modem, no ds-server and no device. It is
+also the working proof that the seams do their job: the `Bridge`, session store,
+parser, executor and reply formatter are the same objects `zero-touchd`
+constructs — only the transport and the gNMI backend are substituted, and
+neither substitution requires a line of change above the seam.
+
+Two shapes, differing only in what sits behind `GnmiSink`:
+
+| | gNMI backend | Proves |
+|---|---|---|
+| `./sim.sh` | `MemGnmiSink`, in-process | grammar, sessions, RBAC, reply format |
+| `./sim.sh --wire` | `LocalGnmiSink` over gRPC | the above **plus the wire** |
+
+`--wire` matters because `LocalGnmiSink` is the only code that speaks protobuf
+and gRPC, and it is compiled out of every build that does not set
+`ZT_BUILD_GNMI`. Without a server to point it at, it never runs outside a
+device: the protobuf path/`TypedValue` codecs, the `prefix.target` RBAC
+convention and `GetResponse`/`SetResponse` decoding all go unexercised.
+
+### `zt-gnmi-simd` — the simulated device
+
+A gNMI server holding a real config tree, seeded from a Lua file
+(`sim/gnmi-tree.lua`, read through `lua_file`). `Get` on a leaf returns it, on a
+container returns the subtree, on nothing returns `NOT_FOUND`; `Set` stores and
+requires `prefix.target == "ADMIN"`.
+
+grace-server's own server could not be reused for this: its `/gnmi.gNMI/Get`
+returns empty `Notification`s and its `/gnmi.gNMI/Set` echoes without storing
+(`app/src/client_app.cpp` — the comments there say as much), so a SET could never
+be read back by a GET. Its handlers are registered in a private method of
+`connected_client` over a private `grpc_session`, so they cannot be overridden
+from outside either. Only the two handlers are therefore ours; `grpc_session`,
+`evt_io`/`run_evt_loop`, `gnmi_util` and the protos are reused verbatim and
+grace-server stays unmodified — the same posture as the rest of the repo.
+
+The tree's lookup rules live in a dependency-free header (`sim/gnmi_tree.hpp`),
+so they are covered by the default host suite rather than needing the gRPC stack
+to test. Walkthrough in [sim/README.md](sim/README.md).
+
 ## Security
 
 - SMS sender IDs are spoofable → the password/session is the gate, not the
@@ -350,3 +402,5 @@ IOT GNMI SET <xpath[,xpath...]> <value[,value...]>   # positional pairing
 5. **DsSmsTransport** — port `smsctl_client`'s ds watch/drain/publish behind the interface.
 6. **zero-touchd** — compose shared `SessionStore` + `smsctl::Executor` + gnmi layer + transport on the ACE reactor. Config keys (hot-applied): `zerotouch.enabled` (ships false), `zerotouch.gnmi.port`, `zerotouch.allowed.numbers`, `zerotouch.session.ttl.sec`, `zerotouch.lockout.{failures,sec}`. A single `IOT LOGIN` (against `auth.users.*`) authorises both gnmi and classic commands; a disabled or non-allowlisted sender is dropped in silence.
 7. **Packaging** — systemd unit, ds schema (`zerotouch.lua`), DEPLOY notes.
+8. **Standalone appliance** — `IModem`/`AtModem`, `AtModemTransport`, `DirectActionSink`, file-backed config/users; one daemon, no ds.
+9. **Simulation** — `zerotouch-sim` over `MemGnmiSink`, then `zt-gnmi-simd` + `--wire` so `LocalGnmiSink` runs against a real gNMI server over gRPC. See [Simulation](#simulation).
