@@ -322,7 +322,11 @@ IOT GNMI SET <xpath[,xpath...]> <value[,value...]>   # positional pairing
 
 - SMS sender IDs are spoofable → the password/session is the gate, not the
   MSISDN (same posture as smsctl). `GNMI SET` requires Admin.
-- Sensitive-path denylist in `LocalGnmiSink` blunts GET-based secret exfil.
+- Sensitive-path denylist in `LocalGnmiSink` blunts GET-based secret exfil, on
+  **both** legs of the RPC: a denylisted xpath is never sent, *and* every leaf
+  the server returns is re-checked. The second check is what covers a subtree
+  read — `GET /system` names no secret, but the response carries the leaves
+  below it.
 - Replay baseline at startup (reuse smsctl's `m_seen_*` guard) so SMS already in
   SIM storage cannot execute on boot.
 - Sender allowlist + brute-force lockout inherited from `SessionStore`.

@@ -13,10 +13,18 @@
  *        device-local gNMI server (127.0.0.1) over a blocking unary RPC.
  *
  * Builds gnmi::GetRequest / SetRequest with gnmi_util, calls
- * gnmi_client::call(), and decodes the response into GnmiResult. A GET xpath on
- * the sensitive-path denylist is never sent — its row reports an error instead
- * of a value, so a secret cannot leak over plaintext SMS. SET is Admin-gated at
- * the command layer and is not denylisted (writing config is not exfil).
+ * gnmi_client::call(), and decodes the response into GnmiResult. SET is
+ * Admin-gated at the command layer and is not denylisted (writing config is not
+ * exfil).
+ *
+ * The sensitive-path denylist is applied on BOTH legs of a GET:
+ *   - request  — a denylisted xpath is never sent to the server at all;
+ *   - response — every returned leaf is re-checked, because a Get on a
+ *                container path ("/system", "/") legitimately returns the whole
+ *                subtree, and that subtree can carry secret leaves the
+ *                requested path did not resemble.
+ * Either way the row reports an error instead of a value, so a secret cannot
+ * leak over plaintext SMS.
  *
  * This translation unit depends on protobuf + libevent + the grace-server
  * framework, so it is compiled only when ZT_BUILD_GNMI is ON. The pure command
