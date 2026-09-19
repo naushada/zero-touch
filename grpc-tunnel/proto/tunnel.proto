@@ -1,0 +1,39 @@
+// tunnel.proto — the transport that reverses who dials whom.
+//
+// The tunnel CLIENT calls Register() and holds the stream open. That is the
+// only TCP connection in the system, and it is opened client -> server, so the
+// client may sit behind NAT with no inbound ports.
+//
+// Application traffic then flows the OTHER way: the tunnel SERVER asks the
+// client to open logical streams (Frame.OPEN) and pushes raw bytes down them.
+// Each logical stream is one TCP connection spliced over the gRPC stream, so
+// what rides inside is itself unmodified HTTP/2 — i.e. a whole second gRPC
+// session, nested in the first.
+syntax = "proto3";
+
+package tunnel;
+
+service Tunnel {
+    // Called by the tunnel client. Long-lived; one call == one tunnel.
+    rpc Register(stream Frame) returns (stream Frame);
+}
+
+message Frame {
+    enum Type {
+        UNKNOWN      = 0;
+        REGISTER     = 1;  // client -> server: "I can serve <target>"
+        REGISTER_ACK = 2;  // server -> client
+        OPEN         = 3;  // server -> client: open logical stream <stream_id>
+        DATA         = 4;  // either way: payload bytes for <stream_id>
+        CLOSE        = 5;  // either way: <stream_id> is done (or failed)
+        KEEPALIVE    = 6;  // client -> server: hold NAT state open
+    }
+
+    // Identifies one logical connection inside the tunnel. Allocated by the
+    // server (the only side that opens streams), zero for session-wide frames.
+    uint64 stream_id = 1;
+    Type   type      = 2;
+    bytes  data      = 3;  // DATA only
+    string target    = 4;  // REGISTER / REGISTER_ACK / OPEN
+    string error     = 5;  // CLOSE only, empty on a clean close
+}

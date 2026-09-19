@@ -1,0 +1,265 @@
+# grpc-tunnel
+
+A reverse gRPC tunnel in C++: **gRPC carried inside gRPC**, so a service that
+has no inbound port can still be called.
+
+Two containers:
+
+| container | has a reachable address | runs a gRPC **server** | runs a gRPC **client** |
+|---|---|---|---|
+| `grpc-tunnel-server` | yes | `Tunnel/Register` — accepts the dial-in | `Echo` — calls the *other* container |
+| `grpc-tunnel-client` | no (behind NAT) | `Echo` — on loopback only | `Tunnel/Register` — dials out |
+
+Both ends are a client *and* a server at once, and they are mirror images of
+each other. That is the whole idea.
+
+## The problem it solves
+
+A device in the field can reach a cloud endpoint, but nothing can reach the
+device: NAT, a firewall, or a carrier-grade address in between. The usual
+answer is polling. A tunnel keeps the direction of *connection setup* and the
+direction of *requests* separate:
+
+* the **TCP connection** is opened client → server, outbound, like any other
+  call it already makes;
+* the **RPCs** then flow server → client, down that same connection.
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph SRV["container: grpc-tunnel-server (reachable)"]
+        direction LR
+        APPC["Echo stub<br/>gRPC CLIENT"]
+        FWD["forwarder<br/>TCP 127.0.0.1:50052"]
+        TSRV["Tunnel/Register<br/>gRPC SERVER :50051"]
+        APPC -->|"plain HTTP/2<br/>over TCP"| FWD
+        FWD -->|"OPEN / DATA<br/>frames"| TSRV
+    end
+
+    subgraph CLI["container: grpc-tunnel-client (behind NAT)"]
+        direction RL
+        TCLI["Tunnel/Register<br/>gRPC CLIENT"]
+        SPL["splice<br/>one socket<br/>per stream"]
+        APPS["Echo service<br/>gRPC SERVER<br/>127.0.0.1:50060"]
+        TCLI -->|"OPEN / DATA<br/>frames"| SPL
+        SPL -->|"plain HTTP/2<br/>over TCP"| APPS
+    end
+
+    TSRV <-->|"ONE bidirectional gRPC stream<br/>TCP dialled client → server"| TCLI
+
+    style APPC fill:#e8f0fe,stroke:#4285f4
+    style APPS fill:#e8f0fe,stroke:#4285f4
+    style TSRV fill:#fce8e6,stroke:#ea4335
+    style TCLI fill:#fce8e6,stroke:#ea4335
+```
+
+Blue is the application — it is written as if the two halves were on the same
+LAN. Red is the tunnel. The application never includes a tunnel header; the
+only thing it is told is a different `host:port` to dial.
+
+### Why a byte splice, not a proto re-encode
+
+Each logical stream is **one TCP connection spliced onto the tunnel**, so what
+travels inside the `DATA` frames is untouched HTTP/2 — a complete second gRPC
+session nested in the first. The tunnel never parses a method name, a header,
+or a message. That is what lets it carry unary *and* streaming RPCs, deadlines,
+status codes and trailers without knowing they exist, and it is why swapping
+`Echo` for any other service needs no change to the tunnel at all.
+
+## Message sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant APP as Echo stub (server ctr)
+    participant FWD as forwarder :50052
+    participant TS as Tunnel server :50051
+    participant TC as Tunnel client
+    participant SVC as Echo service :50060
+
+    rect rgb(253, 236, 234)
+    Note over TC,TS: startup — the only TCP connection, dialled outbound
+    TC->>TS: TCP connect, then Register(stream)
+    TC->>TS: Frame{REGISTER, target="edge-1"}
+    TS-->>TC: Frame{REGISTER_ACK}
+    Note over TS: registry["edge-1"] = session
+    end
+
+    rect rgb(232, 240, 254)
+    Note over APP,SVC: one RPC — requests now run server → client
+    APP->>FWD: TCP connect 127.0.0.1:50052
+    FWD->>TS: accepted, allocate stream_id = 1
+    TS-->>TC: Frame{OPEN, id=1, target="edge-1"}
+    TC->>SVC: TCP connect 127.0.0.1:50060
+    APP->>FWD: HTTP/2 preface, HEADERS, DATA (Echo.Say)
+    FWD->>TS: raw bytes
+    TS-->>TC: Frame{DATA, id=1}
+    TC->>SVC: the same bytes, unmodified
+    SVC-->>TC: HTTP/2 HEADERS, DATA, trailers (SayReply)
+    TC-->>TS: Frame{DATA, id=1}
+    TS-->>FWD: raw bytes
+    FWD-->>APP: SayReply
+    end
+
+    rect rgb(240, 240, 240)
+    Note over APP,SVC: teardown, and the idle tunnel
+    APP->>FWD: close channel
+    FWD->>TS: EOF on the socket
+    TS-->>TC: Frame{CLOSE, id=1}
+    TC->>SVC: close
+    loop every 20s while idle
+        TC->>TS: Frame{KEEPALIVE}
+    end
+    end
+```
+
+A gRPC channel is long-lived, so steps 6–8 happen **once per channel**, not
+once per RPC: further calls reuse `stream_id = 1`. The `--auto` mode below
+shows four RPCs sharing a single tunnel stream.
+
+## The frame protocol
+
+`proto/tunnel.proto` is the entire wire format:
+
+| type | direction | meaning |
+|---|---|---|
+| `REGISTER` | client → server | "I can serve `target`" |
+| `REGISTER_ACK` | server → client | registered |
+| `OPEN` | server → client | open logical stream `stream_id` |
+| `DATA` | either | payload bytes for `stream_id` (32 KiB chunks) |
+| `CLOSE` | either | `stream_id` finished, `error` set if it failed |
+| `KEEPALIVE` | client → server | hold NAT state open |
+
+`stream_id` is allocated by the server, because the server is the only side
+that opens streams. Frames for different streams interleave freely on the one
+gRPC stream; `Session` (in `src/session.cc`) is the multiplexer.
+
+## Running it
+
+Requires **podman** or **docker** — `run.sh` prefers podman when both are
+installed, and `CONTAINER_ENGINE=docker` forces the other. Nothing is built on
+the host; the image carries gRPC 1.51 and protobuf 3.21 from Debian bookworm
+packages, so it builds in about a minute.
+
+```sh
+./run.sh build           # detect engine, build grpc-tunnel:local
+```
+
+Then, in three terminals:
+
+```sh
+./run.sh server          # terminal 1 — the reachable side
+./run.sh client          # terminal 2 — the side behind NAT
+./run.sh rpc hello       # terminal 3 — call Echo through the tunnel
+```
+
+Or all of it at once:
+
+```sh
+./run.sh demo hello      # both containers detached, one RPC, both logs
+```
+
+| command | does |
+|---|---|
+| `build` | detect podman/docker, build the image |
+| `server` | run the tunnel server (add `-d` to detach) |
+| `client` | run the tunnel client (add `-d` to detach) |
+| `rpc [MSG]` | one `Echo.Say` from inside the server container; `--stream` adds the streaming RPC |
+| `demo [MSG]` | both containers plus an RPC, end to end |
+| `logs [server\|client]` | follow a container's log |
+| `stop` / `clean` | remove the containers / also the network and image |
+
+No host port is published by default — the containers reach each other over
+the private `grpc-tunnel-net`, and 50051 is easy to already have taken. Set
+`HOST_PORT=50051 ./run.sh server` to expose the dial-in port as well.
+
+### What you should see
+
+```
+[rpc]    Say -> echo: hello  (served by 4b0cd3b59a2e)
+[server] stream 1 opened -> 'edge-1'
+[client] stream 1 opened -> 127.0.0.1:50060
+[client] Echo.Say from ipv4:127.0.0.1:51218: 'hello'
+```
+
+`served by` is the **client** container's hostname: the reply really was
+produced on the far side of the tunnel. The client's `Echo` service is bound
+to `127.0.0.1` and the container publishes no ports, so the tunnel is the only
+way that RPC could have arrived.
+
+Kill and restart the server (`./run.sh -d server`) and the client reconnects
+by itself after a few seconds — the dial-out loop retries forever, because
+container start order is not guaranteed and a tunnel that does not come back
+is not much of a tunnel.
+
+## Layout
+
+```
+proto/tunnel.proto     the tunnel wire format (Frame)
+proto/echo.proto       the application service — knows nothing about tunnels
+src/session.{h,cc}     the multiplexer: stream table, write serialisation, pumps
+src/net.{h,cc}         listen / dial / write-all
+src/tunnel_server.cc   tunnel gRPC server + TCP forwarder + the app's client
+src/tunnel_client.cc   tunnel gRPC client + the app's server
+src/echo_service.cc    application gRPC SERVER   (runs in the client container)
+src/echo_call.cc       application gRPC CLIENT   (runs in the server container)
+src/echo_client.cc     one-shot CLI behind `./run.sh rpc`
+CMakeLists.txt         finds gRPC via pkg-config (Debian ships no gRPCConfig.cmake)
+Dockerfile             multi-stage; one image, three binaries
+```
+
+### Binary flags
+
+```
+tunnel-server --listen 0.0.0.0:50051      where clients dial in
+              --forward 127.0.0.1:50052   TCP the app's gRPC client dials
+              --target edge-1             which registered tunnel to forward to
+              --auto 10                   call Echo every 10s, for a live demo
+
+tunnel-client --tunnel grpc-tunnel-server:50051
+              --target edge-1             name to register under
+              --echo 127.0.0.1:50060      where the app's gRPC server binds
+              --retry 3 --keepalive 20
+```
+
+`--auto` is the quickest way to watch the path work:
+
+```
+[server] registered target 'edge-1' from ipv4:10.89.0.8:32860
+[server] stream 1 opened -> 'edge-1'
+[server] Say(auto-1) -> echo: auto-1  (served by c0942b411737)
+[server] Say(auto-2) -> echo: auto-2  (served by c0942b411737)
+```
+
+One stream, many RPCs — the channel is reused, as above.
+
+## Lifetime, and the one genuinely sharp edge
+
+A `Session` outlives the RPC handler that created it: pump threads are
+detached and still hold a reference after `Register()` returns, but the
+`ServerReaderWriter*` they write through dies with that handler.
+
+`Session::Shutdown()` closes the window. It takes the same mutex `Send()`
+does, so it cannot complete while a write is in flight, and every `Send()`
+afterwards fails without touching the dead pointer. The handler calls it
+before returning. Socket lifetime is handled the same way: `Conn` closes its
+fd in its destructor, so a stream torn down from the far end is `shutdown()`
+to wake the pump, and the `close()` happens only once the pump has also let
+go — never while another thread is inside `recv()` on it.
+
+## Limits
+
+This is a demonstrator, and honest about it:
+
+* **Insecure credentials.** Real deployments need mTLS on the tunnel, and the
+  server must authenticate `REGISTER` rather than trusting the target name.
+* **No flow control between the two layers.** Inner HTTP/2 flow control still
+  applies per logical stream, but a slow reader is absorbed by socket buffers
+  and the outer stream, not signalled back. Fine at demo volumes.
+* **One target per forwarder.** The registry is already keyed by name and
+  holds many sessions; exposing more than one would mean a listener per target
+  (or SNI/metadata routing), which is a routing decision, not a tunnel one.
+* **Frames are written inline from the read loop**, which keeps ordering
+  trivially correct and costs a little head-of-line blocking across streams
+  sharing a tunnel.
