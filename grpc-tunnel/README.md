@@ -26,32 +26,62 @@ direction of *requests* separate:
 
 ## Architecture
 
-### The pipe, and the dial-in through it
+### 1 · Establishing the tunnel
 
-One bidirectional `Tunnel/Register` stream is the pipe. Step ① runs against
-the direction of everything else — it is the client that opens it, outbound —
-and steps ②–⑤ are one dial-in RPC travelling back down it.
+Nothing can reach the client, so the client goes first. This is the only TCP
+connection in the system, and it is opened in the direction NAT already allows.
 
 ```mermaid
 flowchart LR
     subgraph SRV["container: grpc-tunnel-server · reachable"]
         direction TB
-        APPC["Echo stub<br/>gRPC CLIENT"]
-        EDGS["forwarder :50052<br/>+ Tunnel/Register SERVER :50051"]
-        APPC -->|"② dial 127.0.0.1:50052"| EDGS
+        TSRV["Tunnel/Register<br/>gRPC SERVER :50051"]
+        REG["registry<br/>'edge-1' → session"]
     end
-
-    TUN@{ shape: h-cyl, label: "gRPC tunnel<br/>ONE bidirectional stream<br/> <br/>① opened the OTHER way:<br/>TCP dialled client → server" }
 
     subgraph CLI["container: grpc-tunnel-client · behind NAT"]
-        direction TB
-        EDGC["Tunnel/Register CLIENT<br/>+ splice to a socket"]
-        APPS["Echo service<br/>gRPC SERVER<br/>127.0.0.1:50060"]
-        EDGC -->|"⑤ HTTP/2 bytes,<br/>unmodified"| APPS
+        TCLI["Tunnel/Register<br/>gRPC CLIENT"]
     end
 
-    EDGS ==>|"③ accept · stream_id=1<br/>OPEN + DATA"| TUN
-    TUN ==>|"④ dial 127.0.0.1:50060"| EDGC
+    TCLI ==>|"① TCP connect :50051<br/>② Register(stream) opened<br/>③ Frame REGISTER target='edge-1'"| TSRV
+    TSRV -->|"④ Frame REGISTER_ACK"| TCLI
+    TSRV -.->|"⑤ remember it"| REG
+
+    style TSRV fill:#fce8e6,stroke:#ea4335
+    style TCLI fill:#fce8e6,stroke:#ea4335
+    style REG fill:#f1f3f4,stroke:#9aa0a6
+```
+
+The `Register` call is long-lived — it is held open for the life of the process,
+and the stream it returns *is* the tunnel. Only after ④ does the server have
+anywhere to send a request. If the stream ever breaks the client redials and
+re-registers, every few seconds, forever.
+
+### 2 · Packets inside the established tunnel
+
+Now the direction reverses. Requests run server → client, down the connection
+the client opened.
+
+```mermaid
+flowchart LR
+    subgraph SRV["container: grpc-tunnel-server"]
+        direction TB
+        APPC["Echo stub<br/>gRPC CLIENT"]
+        EDGS["forwarder :50052<br/>+ Tunnel/Register SERVER"]
+        APPC -->|"① dial 127.0.0.1:50052"| EDGS
+    end
+
+    TUN@{ shape: h-cyl, label: "the tunnel, already established<br/> <br/>… DATA id=1 · DATA id=2 · OPEN id=3 · CLOSE id=1 …<br/>every logical stream's frames, interleaved" }
+
+    subgraph CLI["container: grpc-tunnel-client"]
+        direction TB
+        EDGC["Tunnel/Register CLIENT<br/>+ splice onto a socket"]
+        APPS["Echo service<br/>gRPC SERVER<br/>127.0.0.1:50060"]
+        EDGC -->|"④ HTTP/2 bytes,<br/>unmodified"| APPS
+    end
+
+    EDGS ==>|"② accept · stream_id=1<br/>OPEN, then DATA"| TUN
+    TUN ==>|"③ dial 127.0.0.1:50060<br/>write the DATA to it"| EDGC
 
     style TUN fill:#fff4e5,stroke:#f29900,stroke-width:3px
     style APPC fill:#e8f0fe,stroke:#4285f4
@@ -60,7 +90,14 @@ flowchart LR
     style EDGC fill:#fce8e6,stroke:#ea4335
 ```
 
-The reply retraces ⑤→② in reverse, over the same logical stream.
+The server's app dials a plain local port (①); the forwarder accepts that
+socket, allocates a `stream_id` and announces it with `OPEN` (②); the client
+dials the real service and splices the two together (③④). The reply retraces
+the same path in reverse over the same `stream_id`.
+
+Note what is inside the pipe: frames belonging to *different* logical streams,
+interleaved. One tunnel carries every concurrent connection, `stream_id` telling
+them apart — `Session` in `src/session.cc` is the multiplexer that does it.
 
 ### Components
 
