@@ -26,6 +26,44 @@ direction of *requests* separate:
 
 ## Architecture
 
+### The pipe, and the dial-in through it
+
+One bidirectional `Tunnel/Register` stream is the pipe. Step ① runs against
+the direction of everything else — it is the client that opens it, outbound —
+and steps ②–⑤ are one dial-in RPC travelling back down it.
+
+```mermaid
+flowchart LR
+    subgraph SRV["container: grpc-tunnel-server · reachable"]
+        direction TB
+        APPC["Echo stub<br/>gRPC CLIENT"]
+        EDGS["forwarder :50052<br/>+ Tunnel/Register SERVER :50051"]
+        APPC -->|"② dial 127.0.0.1:50052"| EDGS
+    end
+
+    TUN@{ shape: h-cyl, label: "gRPC tunnel<br/>ONE bidirectional stream<br/> <br/>① opened the OTHER way:<br/>TCP dialled client → server" }
+
+    subgraph CLI["container: grpc-tunnel-client · behind NAT"]
+        direction TB
+        EDGC["Tunnel/Register CLIENT<br/>+ splice to a socket"]
+        APPS["Echo service<br/>gRPC SERVER<br/>127.0.0.1:50060"]
+        EDGC -->|"⑤ HTTP/2 bytes,<br/>unmodified"| APPS
+    end
+
+    EDGS ==>|"③ accept · stream_id=1<br/>OPEN + DATA"| TUN
+    TUN ==>|"④ dial 127.0.0.1:50060"| EDGC
+
+    style TUN fill:#fff4e5,stroke:#f29900,stroke-width:3px
+    style APPC fill:#e8f0fe,stroke:#4285f4
+    style APPS fill:#e8f0fe,stroke:#4285f4
+    style EDGS fill:#fce8e6,stroke:#ea4335
+    style EDGC fill:#fce8e6,stroke:#ea4335
+```
+
+The reply retraces ⑤→② in reverse, over the same logical stream.
+
+### Components
+
 ```mermaid
 flowchart TB
     subgraph SRV["container: grpc-tunnel-server (reachable)"]
