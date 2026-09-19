@@ -1,0 +1,24 @@
+// echo.proto — the APPLICATION service, and the whole point of the exercise.
+//
+// It is an ordinary gRPC service that knows nothing about tunnels. The server
+// container runs its stub, the client container runs its implementation, and
+// neither one is written to care that the bytes in between are tunnelled.
+syntax = "proto3";
+
+package echo;
+
+service Echo {
+    rpc Say(SayRequest) returns (SayReply);
+    rpc SayStream(SayRequest) returns (stream SayReply);
+}
+
+message SayRequest {
+    string message = 1;
+    uint32 count   = 2;  // SayStream only; replies to send
+}
+
+message SayReply {
+    string message   = 1;
+    string served_by = 2;  // hostname of the container that answered
+    uint64 seq       = 3;
+}
