@@ -13,6 +13,10 @@ Two containers:
 Both ends are a client *and* a server at once, and they are mirror images of
 each other. That is the whole idea.
 
+The protocol itself is written up separately in **[`SPEC.md`](SPEC.md)** —
+frame-by-frame flow, state machines, ordering rules and prior art. This page is
+the tour; that one is the reference.
+
 ## The problem it solves
 
 A device in the field can reach a cloud endpoint, but nothing can reach the
@@ -210,6 +214,12 @@ shows four RPCs sharing a single tunnel stream.
 that opens streams. Frames for different streams interleave freely on the one
 gRPC stream; `Session` (in `src/session.cc`) is the multiplexer.
 
+**→ [`SPEC.md`](SPEC.md) is the full protocol specification**: which fields are
+valid per frame type, session and stream state machines, the exact frame
+sequence for a unary RPC and for concurrent streams, the ordering and
+concurrency rules, every failure case, and how this compares with
+[openconfig/grpctunnel](https://github.com/openconfig/grpctunnel).
+
 ## Running it
 
 Requires **podman** or **docker** — `run.sh` prefers podman when both are
@@ -271,6 +281,7 @@ is not much of a tunnel.
 ## Layout
 
 ```
+SPEC.md                the protocol specification — frame flow in full detail
 proto/tunnel.proto     the tunnel wire format (Frame)
 proto/echo.proto       the application service — knows nothing about tunnels
 src/session.{h,cc}     the multiplexer: stream table, write serialisation, pumps
