@@ -340,22 +340,74 @@ is not much of a tunnel.
 ## Carrying something real: gNMI
 
 `Echo` is a stand-in. Because the tunnel splices bytes and never decodes them,
-swapping it for a real protocol is a matter of pointing two flags somewhere
-else — no tunnel change at all. Wired against this repo's gNMI simulator:
+swapping it for a real protocol needs no tunnel change at all. Wired against
+this repo's gNMI simulator, and **verified end to end** — the transcript below
+is real output:
 
 ```sh
 # on the device (behind NAT, no inbound port)
 zt-gnmi-simd  --listen=127.0.0.1:50061
-tunnel-client --tunnel cloud-host:50051 --target edge-1 --echo 127.0.0.1:50061
+tunnel-client --tunnel cloud-host:50051 --target edge-1 --dial 127.0.0.1:50061
 
 # in the cloud (reachable)
 tunnel-server --listen 0.0.0.0:50051 --forward 127.0.0.1:50052 --target edge-1
 zerotouch-sim --gnmi=127.0.0.1:50052
 ```
 
+Note **`--dial`, not `--echo`**. They are alternatives, and the difference
+matters as soon as the thing being tunnelled is real:
+
+| flag | what the client does | use when |
+|---|---|---|
+| `--echo ADDR` | **binds** ADDR, serving the built-in demo Echo, and forwards to it | the demo |
+| `--dial ADDR` | binds nothing; forwards to whatever already serves ADDR | a real service |
+
+`--echo` cannot front `zt-gnmi-simd`, because both would try to bind the same
+port. That is what `--dial` is for.
+
 `--gnmi=` does not know it is talking to a tunnel; it dials a host:port like
-always. `Subscribe` streams work unchanged, because nothing in the path learned
-that it was carrying gNMI.
+always. Nothing in the path learned it was carrying gNMI.
+
+### The verified transcript
+
+Driving the device's gNMI server from the cloud side, through the tunnel:
+
+```text
+> IOT LOGIN admin admin
+  ← OK LOGIN: admin, 10 min
+> IOT GNMI GET /system/config/hostname
+  ← OK GNMI GET /system/config/hostname=demo-router
+> IOT GNMI SET /system/config/hostname router-via-tunnel
+  ← OK GNMI SET 1 path(s) updated
+> IOT GNMI GET /system/config/hostname
+  ← OK GNMI GET /system/config/hostname=router-via-tunnel
+```
+
+The `SET` mutated state and the following `GET` read it back, so this is a real
+bidirectional session, not a cached reply. On the device, `zt-gnmi-simd` logged:
+
+```text
+[Set] UPDATE /system/config/hostname = router-via-tunnel
+[Set] role=ADMIN ok — tree now 18 leaf/leaves
+client connected: 127.0.0.1
+```
+
+`client connected: 127.0.0.1` is the point: the connection arrived on
+**loopback**, from the tunnel client sharing its network namespace — not off
+the network. RBAC (`role=ADMIN`, carried in `prefix.target`) worked through the
+tunnel untouched, as it must, since the tunnel never parsed it.
+
+Reaching the same server directly from the network fails, which is what makes
+the tunnel the only possible path:
+
+```text
+$ zerotouch-sim --gnmi=zt-gnmid:50061
+  ← ERR GNMI GET connection closed before response
+```
+
+Three gNMI operations produced three logical streams (`stream 1`, `2`, `3`) —
+`LocalGnmiSink` opens a channel per operation rather than holding one, so the
+channel-reuse behaviour described above does not apply to it.
 
 ### Who advertises what
 
@@ -409,7 +461,10 @@ tunnel-server --listen 0.0.0.0:50051      where clients dial in
 
 tunnel-client --tunnel grpc-tunnel-server:50051
               --target edge-1             name to register under
-              --echo 127.0.0.1:50060      where the app's gRPC server binds
+              --echo 127.0.0.1:50060      demo: serve the built-in Echo here
+                                          and forward to it (binds the port)
+              --dial 127.0.0.1:50061      real: forward to a service that
+                                          already serves here (binds nothing)
               --retry 3 --keepalive 20
 ```
 
