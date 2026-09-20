@@ -94,6 +94,16 @@ public:
         while (stream->Read(&in)) {
             switch (in.type()) {
                 case Frame::REGISTER: {
+                    // A second REGISTER replaces the binding (SPEC.md 4.1).
+                    // Dropping the old name matters: only `target` is carried
+                    // to the teardown below, so an entry left behind here
+                    // would outlive the session and hand a later forwarder a
+                    // corpse instead of an honest "nothing registered".
+                    if (!target.empty() && target != in.target()) {
+                        registry_->Remove(target, sess);
+                        LOG("target '%s' replaced by '%s'", target.c_str(),
+                            in.target().c_str());
+                    }
                     target = in.target();
                     registry_->Add(target, sess);
                     LOG("registered target '%s' from %s", target.c_str(),
