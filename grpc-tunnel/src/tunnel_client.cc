@@ -188,22 +188,45 @@ int main(int argc, char** argv) {
 
     const std::string tunnel_addr = Arg(argc, argv, "--tunnel", "tunnel-server:50051");
     const std::string target      = Arg(argc, argv, "--target", "edge-1");
-    const std::string echo_addr   = Arg(argc, argv, "--echo",   "127.0.0.1:50060");
     const int retry_s             = std::atoi(Arg(argc, argv, "--retry", "3"));
     const int keepalive_s         = std::atoi(Arg(argc, argv, "--keepalive", "20"));
 
+    // Two ways to say where a logical stream should land, and they are
+    // alternatives:
+    //   --echo  demo mode: serve the built-in Echo here, and forward to it.
+    //   --dial  forward mode: something else already serves here (a real gNMI
+    //           server, say) — forward to it and bind nothing.
+    // Demo mode binds the address, so it cannot front a service that already
+    // owns the port; that is the whole distinction.
+    const char* dial_arg = Arg(argc, argv, "--dial", nullptr);
+    const char* echo_arg = Arg(argc, argv, "--echo", nullptr);
+    if (dial_arg != nullptr && echo_arg != nullptr) {
+        LOG("--dial and --echo are alternatives; pass one");
+        return 1;
+    }
+    const bool serve_demo = (dial_arg == nullptr);
+    const std::string local_addr =
+        dial_arg ? dial_arg : (echo_arg ? echo_arg : "127.0.0.1:50060");
+
     std::string echo_host;
     int echo_port = 0;
-    if (!SplitHostPort(echo_addr, &echo_host, &echo_port)) {
-        LOG("--echo must be host:port, got '%s'", echo_addr.c_str());
+    if (!SplitHostPort(local_addr, &echo_host, &echo_port)) {
+        LOG("%s must be host:port, got '%s'", serve_demo ? "--echo" : "--dial",
+            local_addr.c_str());
         return 1;
     }
 
     EchoServiceImpl service;
-    auto echo_server = StartEchoServer(echo_addr, &service);
-    if (!echo_server) {
-        LOG("failed to bind %s", echo_addr.c_str());
-        return 1;
+    std::unique_ptr<grpc::Server> echo_server;
+    if (serve_demo) {
+        echo_server = StartEchoServer(local_addr, &service);
+        if (!echo_server) {
+            LOG("failed to bind %s", local_addr.c_str());
+            return 1;
+        }
+    } else {
+        LOG("forwarding to the existing service on %s (built-in Echo not served)",
+            local_addr.c_str());
     }
 
     LOG("host %s, dialling %s", Hostname().c_str(), tunnel_addr.c_str());
