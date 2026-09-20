@@ -116,7 +116,7 @@ if [ "$SIM" = 1 ]; then
        cmake -S . -B build -DZT_BUILD_SIM=ON && cmake --build build --target zerotouch-sim"
     fi
     IMG="zerotouch-sim:local"
-    echo "==> building the simulator image ($IMG) with $ENGINE…"
+    echo "==> building the simulator image ($IMG) with ${ENGINE}…"
     "$ENGINE" build -f Dockerfile.sim -t "$IMG" .
     echo
     echo "Done: image $IMG  (zerotouch-sim + zt-gnmi-simd)"
