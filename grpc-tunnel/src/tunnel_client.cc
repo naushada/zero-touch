@@ -112,6 +112,20 @@ void RunTunnel(const std::string& tunnel_addr, const std::string& target,
                 // Dialled inline so the OPEN is finished before the DATA
                 // frames behind it are processed. Localhost, so it is quick.
                 const uint64_t id = in.stream_id();
+
+                // The client is the only party that knows for certain which
+                // name it registered under, so it is the right place to catch
+                // a server routing a stream to the wrong session — a stale
+                // registry entry, or a name replaced mid-flight.
+                if (!in.target().empty() && in.target() != target) {
+                    LOG("stream %llu: OPEN for '%s' but we registered '%s' "
+                        "— refusing",
+                        static_cast<unsigned long long>(id),
+                        in.target().c_str(), target.c_str());
+                    sess->SendClose(id, "target mismatch");
+                    break;
+                }
+
                 int fd = DialTcp(echo_host, echo_port);
                 if (fd < 0) {
                     LOG("stream %llu: cannot reach local service %s:%d",
