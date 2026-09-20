@@ -103,6 +103,65 @@ Note what is inside the pipe: frames belonging to *different* logical streams,
 interleaved. One tunnel carries every concurrent connection, `stream_id` telling
 them apart — `Session` in `src/session.cc` is the multiplexer that does it.
 
+### The three connections
+
+The diagrams above are easy to misread as "the tunnel dials out to something".
+It does not. After phase 1, **no further TCP connection ever crosses the
+network.** Every connection opened afterwards is loopback, inside one
+container.
+
+Captured live from `/proc/net/tcp`, with two RPCs in flight at once:
+
+```text
+=== server container ===                  === client container ===
+LOOPBACK  127.0.0.1:33912 -> :50052       LOOPBACK  127.0.0.1:37632 -> :50060
+LOOPBACK  127.0.0.1:34892 -> :50052       LOOPBACK  127.0.0.1:49186 -> :50060
+NETWORK   10.89.0.2:50051 <-------------------------> 10.89.0.3:51144
+```
+
+Two concurrent calls created two new loopback connections *in each container* —
+and the count of connections crossing the network stayed at **one**. That is
+the whole mechanism, in one picture.
+
+To see it yourself while the containers are running (ports are hex in there:
+50051 is `c383`, 50052 `c384`, 50060 `c38c`):
+
+```sh
+podman exec grpc-tunnel-server cat /proc/net/tcp    # the loopback pairs
+podman exec grpc-tunnel-server cat /proc/net/tcp6   # the tunnel itself
+```
+
+#### Why there are loopback sockets at all
+
+gRPC C++ has no pluggable transport — a stub cannot be handed a tunnel and told
+to write into it. It can only talk to a **socket**. So each side gives it an
+ordinary local one and relays the bytes: the forwarder on `127.0.0.1:50052` for
+the server's stub to dial, and the Echo service on `127.0.0.1:50060` for the
+tunnel client to dial. Neither port is reachable from outside its container.
+
+#### One RPC, followed socket by socket
+
+| step | what happens | socket |
+|---|---|---|
+| 1 | the app's stub dials the forwarder | new loopback `33912 → 50052` |
+| 2 | forwarder accepts, allocates `stream_id=1`, sends `OPEN` | the network connection |
+| 3 | tunnel client gets `OPEN`, dials its Echo service | new loopback `37632 → 50060` |
+| 4 | stub writes HTTP/2 preface, HEADERS, DATA | into `33912` |
+| 5 | forwarder reads those bytes, wraps them as `DATA id=1` | the network connection |
+| 6 | tunnel client writes the bytes out verbatim | into `37632` |
+| 7 | Echo service reads a perfectly ordinary HTTP/2 stream | off `50060` |
+
+The reply retraces 7→4. Steps 5–6 are a byte relay: nothing is decoded and
+nothing is re-encoded.
+
+#### There is only ever one `Register` call
+
+The tunnel does **not** make a gRPC call per application RPC. It makes exactly
+one — `Register` — at startup, and holds it open for the life of the process.
+Every RPC afterwards is `Frame` messages on that one already-open call. This is
+why a second concurrent call dials nothing across the network: the server
+allocates `stream_id=2`, and its frames simply interleave with stream 1's.
+
 ### Components
 
 ```mermaid
