@@ -122,6 +122,13 @@ A second `REGISTER` on the same session replaces the target binding. If two
 sessions register the same target, the later registration wins; the earlier
 session stays open but becomes unroutable.
 
+**What is advertised, and what is configured.** Only the client advertises: a
+`target` is a claim the client makes at dial-in. The server advertises nothing.
+Its forwarder endpoint is static operator configuration (`--target`), bound at
+startup *before* any client has registered, and a connection to it is refused
+until a matching session appears. An implementation MAY instead create
+endpoints dynamically on registration; this one does not.
+
 When a session ends, the server MUST remove its registry entry **only if that
 entry still points at this session** — a client that reconnects quickly can
 register again before the previous handler has finished unwinding, and an
@@ -323,6 +330,14 @@ v1 is **not** secure and MUST NOT be exposed to an untrusted network as-is.
 * **`error` strings cross a trust boundary** and SHOULD NOT carry internal
   detail.
 
+One property works in the deployer's favour. Because the tunnel relays payload
+bytes without decoding them (§5.2), an application protocol MAY run its own TLS
+*end to end through* the tunnel, and the tunnel cannot read that session. This
+also blunts `REGISTER` spoofing: a hostile registration can hijack routing, but
+the application client's certificate check then fails against the wrong peer,
+so the attack degrades from silent interception to denial of service. This is a
+mitigation, not a substitute for §9's first two bullets.
+
 ---
 
 ## 10. Non-goals
@@ -333,6 +348,15 @@ v1 is **not** secure and MUST NOT be exposed to an untrusted network as-is.
   many sessions, but a plain TCP `accept()` carries no routing information, so
   the target has to be bound to the listener. Reaching a second target needs a
   second listener.
+
+  In fleet terms this is the sharpest limit in v1: *N* devices means *N*
+  forwarder ports, allocated in advance, with the operator maintaining the
+  device → port mapping by hand. The tunnel side already scales — the registry
+  holds many sessions — so what is missing is creating an endpoint when a
+  device registers, or carrying the target somewhere other than "which port you
+  connected to". Note that the obvious fix, reading the target from the
+  payload's metadata or `:authority`, would require parsing the inner protocol
+  and forfeit §10's last bullet.
 * Interpreting the payload. The tunnel is protocol-agnostic and carries any
   TCP-based protocol, not only gRPC.
 
