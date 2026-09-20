@@ -337,6 +337,51 @@ by itself after a few seconds — the dial-out loop retries forever, because
 container start order is not guaranteed and a tunnel that does not come back
 is not much of a tunnel.
 
+## Carrying something real: gNMI
+
+`Echo` is a stand-in. Because the tunnel splices bytes and never decodes them,
+swapping it for a real protocol is a matter of pointing two flags somewhere
+else — no tunnel change at all. Wired against this repo's gNMI simulator:
+
+```sh
+# on the device (behind NAT, no inbound port)
+zt-gnmi-simd  --listen=127.0.0.1:50061
+tunnel-client --tunnel cloud-host:50051 --target edge-1 --echo 127.0.0.1:50061
+
+# in the cloud (reachable)
+tunnel-server --listen 0.0.0.0:50051 --forward 127.0.0.1:50052 --target edge-1
+zerotouch-sim --gnmi=127.0.0.1:50052
+```
+
+`--gnmi=` does not know it is talking to a tunnel; it dials a host:port like
+always. `Subscribe` streams work unchanged, because nothing in the path learned
+that it was carrying gNMI.
+
+### Who advertises what
+
+Worth being precise, because the asymmetry is easy to get backwards:
+
+| | who decides it | when |
+|---|---|---|
+| the target name `edge-1` | **the device**, in its `REGISTER` frame | at dial-in |
+| the forwarder port `:50052` | **operator config**, `--target` | at server startup |
+
+Only the device advertises. The server advertises nothing — its endpoint is
+bound before any device has registered, and simply refuses connections until a
+matching session appears. So the endpoint is not conjured by a device showing
+up; it has to be arranged in advance.
+
+That is fine for one device and awkward for a fleet — see **Limits** below.
+
+### mTLS still works end to end
+
+Since the tunnel cannot read the payload, the gNMI client and the device's gNMI
+server can run their own mTLS straight through it. That also takes some of the
+sting out of the unauthenticated `REGISTER`: a hostile registration can hijack
+*routing*, but the client's certificate check fails on landing at the wrong
+device — so it becomes a denial of service rather than a silent
+man-in-the-middle. A mitigation, not a fix.
+
 ## Layout
 
 ```
@@ -402,9 +447,13 @@ This is a demonstrator, and honest about it:
 * **No flow control between the two layers.** Inner HTTP/2 flow control still
   applies per logical stream, but a slow reader is absorbed by socket buffers
   and the outer stream, not signalled back. Fine at demo volumes.
-* **One target per forwarder.** The registry is already keyed by name and
-  holds many sessions; exposing more than one would mean a listener per target
-  (or SNI/metadata routing), which is a routing decision, not a tunnel one.
+* **One target per forwarder**, fixed at startup. The registry is already
+  keyed by name and holds many sessions; exposing more than one would mean a
+  listener per target (or SNI/metadata routing), which is a routing decision,
+  not a tunnel one. For a fleet this is the sharpest limit: *N* devices means
+  *N* forwarder ports allocated in advance, with the device → port mapping
+  maintained by hand. What is missing is creating an endpoint when a device
+  registers — the tunnel side already scales.
 * **Frames are written inline from the read loop**, which keeps ordering
   trivially correct and costs a little head-of-line blocking across streams
   sharing a tunnel.
