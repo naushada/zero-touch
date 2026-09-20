@@ -174,6 +174,14 @@ The client, on `OPEN`, dials its local service and binds the resulting socket
 to `stream_id`. This dial MUST happen before any subsequent frame for that id
 is processed — see the ordering rule in §7.
 
+A client MUST reject an `OPEN` whose `target` is non-empty and does not match
+the name it registered, answering `CLOSE` with an `error` and dialling nothing.
+The client is the only party that knows with certainty which name it claimed,
+so this is the last place a misrouted stream can be caught — a stale registry
+entry on the server would otherwise be served as though it were legitimate.
+This is the only use a receiver makes of `OPEN.target` in v1; a client that
+fronted several local services would also use it to choose between them.
+
 ### 5.2 Data
 
 * `DATA.data` is opaque. Implementations MUST NOT interpret, reframe on
